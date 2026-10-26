@@ -47,7 +47,7 @@ def fantasy_points(box: dict, scoring: dict) -> float:
     total += scoring.get("ff", 0) * box.get("ff", 0)
 
     # Double-double / triple-double.
-    # ASSUMPTION to verify against Sleeper: a triple-double earns BOTH bonuses.
+    # Confirmed in Sleeper: a triple-double earns BOTH bonuses (they stack).
     tens = sum(1 for c in _DOUBLE_CATS if box.get(c, 0) >= 10)
     if tens >= 2:
         total += scoring.get("dd", 0)
