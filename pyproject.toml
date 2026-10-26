@@ -1,0 +1,9 @@
+[project]
+name = "fantasy-assistant"
+version = "0.1.0"
+description = "Fantasy basketball assistant built around Sleeper's Lock-In Mode"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
