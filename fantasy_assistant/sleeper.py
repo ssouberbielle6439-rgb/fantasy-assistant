@@ -38,6 +38,16 @@ def get_league_users(league_id: str) -> list[dict]:
     return _get(f"/league/{league_id}/users")
 
 
+def get_state(sport: str = "nba") -> dict:
+    """Current season and week number."""
+    return _get(f"/state/{sport}")
+
+
+def get_matchups(league_id: str, week: int) -> list[dict]:
+    """Every team's starters and per-slot points for a week."""
+    return _get(f"/league/{league_id}/matchups/{week}")
+
+
 def get_players(sport: str = "nba") -> dict:
     """Every player Sleeper knows about, keyed by Sleeper player id.
 

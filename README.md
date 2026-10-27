@@ -4,7 +4,7 @@ A fantasy basketball assistant built around Sleeper's **Lock-In Mode**, where on
 
 After each game you have to decide: **lock** this score, or **pass** and hope a later game is better? Passing is permanent, so this is a classic *optimal stopping* problem. This project solves it with math instead of gut feel, using my real league's settings and scoring.
 
-> Status: early development. League connection, scoring, lock-in math, and player profiles from real game logs are in place.
+> Status: early development. The `advise` command gives LOCK / PASS for every lineup slot using the whole roster, this week's schedule, and injury statuses.
 
 ## How the lock-in math works
 
@@ -23,6 +23,24 @@ Example: a player averaging 40 fantasy points, with typical swings of about 10 a
 
 The bar rises when more games are left, because more chances to beat a score means you can afford to be pickier.
 
+## How the lineup advice works
+
+In my league, each of the 9 starting slots ends the week with one game. After a game you can lock it, or bench the player and give the slot to someone else on the roster. So the real question for a slot isn't "will this player do better later?" but "will anyone who can fill this slot do better later?"
+
+The app answers two questions: **whether** to lock a score, and **where**. A player who qualifies for several slots (say PG/SG) should be locked into the slot where he's least needed later, so flexible slots like UTIL stay open for late big games.
+
+The key modeling point: **each player can only be locked once per week**, so each open slot is really waiting on one player.
+
+1. **Value each player's week.** For every available player, the lock-in math gives the score we'd expect to end up locking from his remaining games (more games and a higher ceiling mean more value).
+2. **Match players to slots.** Pair players with open slots, one player per slot and respecting positions, to maximize the team's expected total. That's the classic *assignment problem*, solved exactly with the Hungarian algorithm (tested against brute force).
+3. **Choose locks for the whole lineup.** For every player with a score in hand, try locking him into each slot he's eligible for and compare the team's total (his score plus the best matching of everyone else) against passing. Take the best lock and repeat. A player with no games left gets locked in his best slot for free, since passing can't gain anything.
+4. **Respect the manager's rule of thumb.** Scores under a configurable minimum (`MIN_LOCK_POINTS`, default 25) are only locked when nobody else can fill the slot; otherwise the app shows the lock it would have made and leaves the call to you.
+5. **Explain the moves in Sleeper terms.** A straight swap only works if the other player is eligible for the slot being vacated, and benching a player clears his last game, so the instructions follow those rules.
+
+It also suggests **free rolls**: if a slot's planned player doesn't play today, drop in a spare who does. If he goes off, lock him; if not, nothing is lost.
+
+An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
+
 ## Project layout
 
 ```
@@ -34,6 +52,8 @@ fantasy_assistant/
   profile.py    # turns game logs into each player's average, swing, and chance to play
   schedule.py   # the NBA season schedule (who plays which day)
   status.py     # chance to play from Sleeper injury status (Out = next game only)
+  lineup.py     # lineup slots, who can fill them, and each slot's lock bar
+  locks.py      # remembers which slots are locked this week
   __main__.py   # command-line entry point
 tests/          # automated tests for scoring and lock-in math
 ```
@@ -50,6 +70,7 @@ python -m pytest            # run the tests
 python -m fantasy_assistant roster    # print your league and roster
 python -m fantasy_assistant profiles  # each player's numbers and lock-in bars
 python -m fantasy_assistant week      # who plays which day this week
+python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot
 ```
 
 ## Roadmap
@@ -60,7 +81,9 @@ python -m fantasy_assistant week      # who plays which day this week
 - [x] Pull real game logs and estimate each player's average, swing, and chance to play
 - [x] Know each player's remaining games this week (NBA schedule)
 - [x] Chance to play from Sleeper injury status, game by game
-- [ ] Weekly simulator: lock or pass for each lineup slot, using the whole roster
+- [x] Lock or pass for each lineup slot, using the whole roster and saved locks
+- [ ] Matchup-aware advice: play for win probability, not just points
+- [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Weight this season's games more heavily as the season goes on
 - [ ] Read injury news with Gemini to sharpen chance-to-play
 - [ ] Store data in DuckDB
