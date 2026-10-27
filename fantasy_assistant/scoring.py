@@ -7,6 +7,8 @@ always scores players exactly the way YOUR league does.
 
 from __future__ import annotations
 
+import re
+
 # Sleeper scoring key -> how to read that stat from a box-score dict.
 # Box-score keys follow nba_api naming (PTS, REB, AST, ...), lowercased.
 _COUNTING_STATS = {
@@ -24,6 +26,28 @@ _COUNTING_STATS = {
 
 # Categories that count toward a double-double / triple-double.
 _DOUBLE_CATS = ("pts", "reb", "ast", "stl", "blk")
+
+# Big-game bonuses follow a pattern: bonus_<stat>_<N>p, e.g. bonus_pt_40p
+# (40+ points) or bonus_ast_15p (15+ assists). Any bonus in this pattern works
+# automatically, so new ones a commissioner adds need no code changes.
+_BONUS_PATTERN = re.compile(r"^bonus_([a-z]+)_(\d+)p$")
+_BONUS_STATS = {"pt": "pts", "pts": "pts", "reb": "reb", "ast": "ast",
+                "stl": "stl", "blk": "blk", "tpm": "fg3m"}
+
+_OTHER_KEYS = {"ftmi", "tf", "ff", "dd", "td"}
+
+
+def unknown_scoring_keys(scoring: dict) -> list[str]:
+    """Scoring settings this module doesn't know how to apply."""
+    unknown = []
+    for key, value in scoring.items():
+        if not value or key in _COUNTING_STATS or key in _OTHER_KEYS:
+            continue
+        match = _BONUS_PATTERN.match(key)
+        if match and match.group(1) in _BONUS_STATS:
+            continue
+        unknown.append(key)
+    return sorted(unknown)
 
 
 def fantasy_points(box: dict, scoring: dict) -> float:
@@ -54,14 +78,12 @@ def fantasy_points(box: dict, scoring: dict) -> float:
     if tens >= 3:
         total += scoring.get("td", 0)
 
-    # Big-game bonuses.
-    # ASSUMPTION to verify: a 50-point game earns both the 40+ and 50+ bonus.
-    pts = box.get("pts", 0)
-    if pts >= 40:
-        total += scoring.get("bonus_pt_40p", 0)
-    if pts >= 50:
-        total += scoring.get("bonus_pt_50p", 0)
-    if box.get("reb", 0) >= 20:
-        total += scoring.get("bonus_reb_20p", 0)
+    # Big-game bonuses (40+ points, 20+ rebounds, 15+ assists, ...).
+    # Confirmed in Sleeper: a 50-point game earns both the 40+ and 50+ bonus (they stack).
+    for key, value in scoring.items():
+        match = _BONUS_PATTERN.match(key)
+        if match and match.group(1) in _BONUS_STATS:
+            if box.get(_BONUS_STATS[match.group(1)], 0) >= int(match.group(2)):
+                total += value
 
     return round(total, 2)

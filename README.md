@@ -4,7 +4,7 @@ A fantasy basketball assistant built around Sleeper's **Lock-In Mode**, where on
 
 After each game you have to decide: **lock** this score, or **pass** and hope a later game is better? Passing is permanent, so this is a classic *optimal stopping* problem. This project solves it with math instead of gut feel, using my real league's settings and scoring.
 
-> Status: early development. Step 1 (league connection, scoring, lock-in math) is in place.
+> Status: early development. League connection, scoring, lock-in math, and player profiles from real game logs are in place.
 
 ## How the lock-in math works
 
@@ -30,7 +30,11 @@ fantasy_assistant/
   sleeper.py    # talks to Sleeper's free API (league, rosters, players)
   scoring.py    # turns a box score into fantasy points using MY league's scoring
   lockin.py     # the lock-or-pass engine
-  __main__.py   # prints my league and roster (step 1 check)
+  nba_stats.py  # downloads game logs from NBA.com (cached in data/)
+  profile.py    # turns game logs into each player's average, swing, and chance to play
+  schedule.py   # the NBA season schedule (who plays which day)
+  status.py     # chance to play from Sleeper injury status (Out = next game only)
+  __main__.py   # command-line entry point
 tests/          # automated tests for scoring and lock-in math
 ```
 
@@ -43,7 +47,9 @@ python -m venv .venv
 pip install -r requirements.txt
 copy .env.example .env      # then open .env and fill in your values
 python -m pytest            # run the tests
-python -m fantasy_assistant # print your league and roster
+python -m fantasy_assistant roster    # print your league and roster
+python -m fantasy_assistant profiles  # each player's numbers and lock-in bars
+python -m fantasy_assistant week      # who plays which day this week
 ```
 
 ## Roadmap
@@ -51,13 +57,18 @@ python -m fantasy_assistant # print your league and roster
 - [x] Connect to a Sleeper league and read its scoring
 - [x] Score any stat line with the league's own settings
 - [x] Lock-in thresholds via backward induction
-- [ ] Pull real game logs and estimate each player's mean, spread, and chance to play
+- [x] Pull real game logs and estimate each player's average, swing, and chance to play
+- [x] Know each player's remaining games this week (NBA schedule)
+- [x] Chance to play from Sleeper injury status, game by game
+- [ ] Weekly simulator: lock or pass for each lineup slot, using the whole roster
+- [ ] Weight this season's games more heavily as the season goes on
+- [ ] Read injury news with Gemini to sharpen chance-to-play
 - [ ] Store data in DuckDB
 - [ ] Web page (FastAPI) showing lock or pass for every player
-- [ ] Plain-English explanations with Gemini
 - [ ] Backtest on last season: does the engine beat gut feel?
 
 ## Data and credits
 
 - League data: [Sleeper API](https://docs.sleeper.com/) (free, read-only)
+- Game logs: NBA.com via [nba_api](https://github.com/swar/nba_api)
 - License: MIT

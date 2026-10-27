@@ -1,4 +1,4 @@
-from fantasy_assistant.scoring import fantasy_points
+from fantasy_assistant.scoring import fantasy_points, unknown_scoring_keys
 
 # Santiago's league scoring, as returned by Sleeper.
 LEAGUE = {
@@ -31,3 +31,29 @@ def test_fifty_point_game_bonuses():
     box = {"pts": 50}
     # 25 + 2 (40+) + 3 (50+)
     assert fantasy_points(box, LEAGUE) == 30
+
+
+def test_matches_sleeper_jamal_murray_real_games():
+    # Real box scores from NBA.com, checked against the FPTS Sleeper shows
+    # in Murray's game log: 32.30 (@GSW 10/23/2025) and 33.10 (@MIN 10/27/2025).
+    at_gsw = {"pts": 25, "reb": 3, "oreb": 1, "ast": 10, "stl": 3, "blk": 0, "tov": 3,
+              "pf": 2, "fgm": 11, "fga": 20, "fg3m": 1, "ftm": 2, "fta": 2}
+    at_min = {"pts": 43, "reb": 6, "oreb": 0, "ast": 3, "stl": 0, "blk": 0, "tov": 2,
+              "pf": 2, "fgm": 16, "fga": 29, "fg3m": 5, "ftm": 6, "fta": 7}
+    assert fantasy_points(at_gsw, LEAGUE) == 32.3
+    assert fantasy_points(at_min, LEAGUE) == 33.1
+
+
+def test_new_assist_bonus_and_lower_double_bonuses():
+    # Commissioner change, Oct 2026: 15+ assists +3, double-double 2, triple-double 4.
+    updated = {**LEAGUE, "dd": 2.0, "td": 4.0, "bonus_ast_15p": 3.0}
+    box = {"pts": 10, "reb": 10, "ast": 15}
+    # 5 + 10 + 15 + 2 dd + 4 td + 3 (15+ assists)
+    assert fantasy_points(box, updated) == 39
+    assert fantasy_points({"ast": 14}, updated) == 14  # just short of the bonus
+
+
+def test_unknown_scoring_keys_are_reported():
+    assert unknown_scoring_keys(LEAGUE) == []
+    assert unknown_scoring_keys({**LEAGUE, "bonus_ast_15p": 3.0}) == []
+    assert unknown_scoring_keys({**LEAGUE, "some_new_rule": 1.0}) == ["some_new_rule"]
