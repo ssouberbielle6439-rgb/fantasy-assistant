@@ -55,7 +55,7 @@ fantasy_assistant/
   lineup.py     # lineup slots, who can fill them, and each slot's lock bar
   locks.py      # remembers which slots are locked this week
   __main__.py   # command-line entry point
-tests/          # automated tests for scoring and lock-in math
+tests/          # automated tests, including regression tests from real league situations
 ```
 
 ## Setup (Windows, PowerShell)
