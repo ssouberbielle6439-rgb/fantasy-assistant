@@ -75,12 +75,17 @@ def _download_with_retries(nba_id: int, season: str) -> dict:
     raise NBAStatsUnavailable(str(last_error))
 
 
-def game_logs(nba_id: int, season: str, is_current: bool) -> list[dict]:
-    """One player's games for a season ("2026-27"), most recent first."""
+def game_logs(nba_id: int, season: str, is_current: bool,
+              max_age: float = CURRENT_SEASON_MAX_AGE) -> list[dict]:
+    """One player's games for a season ("2026-27"), most recent first.
+
+    `max_age` (seconds) is how old the current season's cache may be; `review`
+    passes a shorter one so last night's games are in before it grades advice.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cache = DATA_DIR / f"{nba_id}_{season}.json"
     if cache.exists():
-        fresh = time.time() - cache.stat().st_mtime < CURRENT_SEASON_MAX_AGE
+        fresh = time.time() - cache.stat().st_mtime < max_age
         if fresh or not is_current:
             return json.loads(cache.read_text(encoding="utf-8"))
 

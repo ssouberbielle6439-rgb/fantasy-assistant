@@ -127,6 +127,14 @@ def test_parse_lock_answer():
     assert parse_answer("PG XYZ", labels, []) is None         # typo -> ask again
 
 
+def test_powershell_piped_locks_keep_their_first_slot():
+    # `"PG F" | python -m fantasy_assistant advise` in PowerShell 5.1 arrives as
+    # "﻿PG F": the hidden mark made PG unknown and the saved locks were used instead.
+    labels = ["PG", "F", "UTIL1", "UTIL2"]
+    assert parse_answer("﻿PG F", labels, ["UTIL1"]) == ["PG", "F"]
+    assert parse_answer("﻿", labels, ["UTIL1"]) == ["UTIL1"]   # piped "" keeps saved
+
+
 def test_swap_instructions_follow_sleeper_rule():
     slots = [Slot("PG", "PG", "quickley", 26.0), Slot("SG", "SG", "white", 15.0)]
     moves = [LockMove("quickley", "PG", "SG", 26.0, 5.0)]
