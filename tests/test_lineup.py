@@ -127,6 +127,15 @@ def test_parse_lock_answer():
     assert parse_answer("PG XYZ", labels, []) is None         # typo -> ask again
 
 
+def test_powershell_pipe_byte_order_mark_is_ignored():
+    # Piping into advise from Windows PowerShell 5.1 prepends an invisible
+    # byte-order mark; it printed "Didn't recognize that" before this fix.
+    labels = ["PG", "PF", "UTIL1", "UTIL2"]
+    assert parse_answer("﻿", labels, ["PG"]) == ["PG"]            # "" keeps saved
+    assert parse_answer("﻿PG PF", labels, []) == ["PG", "PF"]     # slots still read
+    assert parse_answer("﻿none", labels, ["PG"]) == []
+
+
 def test_swap_instructions_follow_sleeper_rule():
     slots = [Slot("PG", "PG", "quickley", 26.0), Slot("SG", "SG", "white", 15.0)]
     moves = [LockMove("quickley", "PG", "SG", 26.0, 5.0)]
