@@ -119,7 +119,19 @@ def best_assignment(weights: list[list[float]]) -> list[int]:
 
 
 OWN_SLOT_BONUS = 0.01  # on a tie, a player stays in the slot he's already in
-DEFAULT_MIN_LOCK = 25.0  # Santiago's rule of thumb: rarely lock a non-star below ~25
+
+# Santiago's lock rules for non-stars. 25 is a TARGET: locks below it are fine,
+# just labeled. The FLOOR is the real limit: below it, a lock is held back
+# (unless nobody else can fill the slot). On Sunday, the last day of the
+# fantasy week, few games are left, so the floor drops.
+LOCK_TARGET = 25.0
+LOCK_FLOOR = 23.0
+SUNDAY_FLOOR = 20.0
+
+
+def lock_floor(day: date) -> float:
+    """Lowest score worth locking on this day (Monday=0 ... Sunday=6)."""
+    return SUNDAY_FLOOR if day.weekday() == 6 else LOCK_FLOOR
 
 
 def player_values(future: dict[date, list[FutureGame]]) -> dict[str, float]:
@@ -205,7 +217,7 @@ def pass_values(slots: list[Slot], values: dict[str, float]) -> dict[str, float]
 
 
 def recommend_locks(slots: list[Slot], values: dict[str, float],
-                    positions: dict[str, set[str]], min_lock: float = DEFAULT_MIN_LOCK
+                    positions: dict[str, set[str]], floor: float = LOCK_FLOOR
                     ) -> tuple[list[LockMove], list[LockMove]]:
     """Which scores in hand to lock, and in which slot.
 
@@ -214,9 +226,10 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
     expected points (his score + the best matching of everyone else to the
     remaining slots) against passing. Take the best lock and repeat.
 
-    Scores under `min_lock` are only locked when the slot would otherwise have
-    nobody left to fill it. Returns (locks, held_back): held_back are locks the
-    math liked but the minimum blocked, so the user can override if they want.
+    Scores under `floor` are only locked when the slot would otherwise have
+    nobody left to fill it. Above the floor, the math decides. Returns
+    (locks, held_back): held_back are locks the math liked but the floor
+    blocked, so the user can override if they want.
     """
     work = [Slot(s.label, s.kind, s.player_id, s.score, s.locked) for s in slots]
     vals = pass_values(work, values)
@@ -247,7 +260,7 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
                 nobody_else = not any(p != pid and v > 0 and can_fill(k.kind, positions.get(p, set()))
                                       for p, v in vals.items())
                 # On a tie, lock him where he already is: no Sleeper moves needed.
-                if score < min_lock and not nobody_else:
+                if score < floor and not nobody_else:
                     if pid not in held or (gain, move.stays) > (held[pid].gain, held[pid].stays):
                         held[pid] = move
                     continue

@@ -240,8 +240,8 @@ def cmd_advise() -> int:
     from datetime import datetime, timedelta
 
     from . import advice_log, locks, schedule
-    from .lineup import (DEFAULT_MIN_LOCK, FutureGame, alternatives, apply_moves, can_fill,
-                         depth_label, pass_values, plan_week, player_values,
+    from .lineup import (LOCK_TARGET, FutureGame, alternatives, apply_moves, can_fill,
+                         depth_label, lock_floor, pass_values, plan_week, player_values,
                          recommend_locks)
     from .lockin import GameForecast
     from .status import play_chances
@@ -292,22 +292,24 @@ def cmd_advise() -> int:
             fc = GameForecast(prof.average, prof.swing, chance)
             future[day].append(FutureGame(pid, day, fc, game.opponent_of(team)))
 
-    min_lock = float(os.getenv("MIN_LOCK_POINTS") or DEFAULT_MIN_LOCK)
+    target = float(os.getenv("LOCK_TARGET_POINTS") or LOCK_TARGET)
+    floor = lock_floor(now.date())
     values = player_values(future)
 
     # 1. Which scores in hand to lock, and in which slot.
-    moves, held = recommend_locks(slots, values, positions, min_lock)
+    moves, held = recommend_locks(slots, values, positions, floor)
     after, steps = apply_moves(slots, moves, positions, short)
     if moves:
         print("\nRecommended locks (in this order):")
-        for step in steps:
-            print(f"  - {step}")
+        for move, step in zip(moves, steps):
+            below = f"  [below your {target:.0f} target]" if move.score < target else ""
+            print(f"  - {step}{below}")
         gain = sum(m.gain for m in moves)
         print(f"  These add about {gain:.1f} expected points to your week vs. passing.")
     else:
         print("\nNo locks recommended right now: every score in hand is worth passing on.")
     for h in held:
-        print(f"  (Held back by your {min_lock:.0f}-point minimum: locking {short(h.player_id)}'s "
+        print(f"  (Held back by today's {floor:.0f}-point floor: locking {short(h.player_id)}'s "
               f"{h.score:.1f} in {h.to_label} would add about {h.gain:.1f}. Your call.)")
 
     # 2. The plan for the rest of the week: which player each open slot is waiting on.
@@ -392,7 +394,8 @@ def cmd_advise() -> int:
         "week": week_no,
         "week_start": week[0].isoformat(),
         "first_day": first_day.isoformat(),  # games from this day on were "still to come"
-        "min_lock": min_lock,
+        "floor": floor,
+        "target": target,
         "slots": rows,
         "locks": [move_dict(m) for m in moves],
         "held": [move_dict(h) for h in held],
@@ -543,7 +546,7 @@ def cmd_review(args: list[str]) -> int:
     print("\nHow the advice did (each call counted once):")
     meaning = {"LOCK": "graded on his next game",
                "PASS": "graded on how the slot finished",
-               "HELD": "held back by your minimum; right = the minimum paid off"}
+               "HELD": "held back by the floor; right = the floor paid off"}
     total_right = total_graded = 0
     for kind in ("LOCK", "PASS", "HELD"):
         k = counts.get(kind)

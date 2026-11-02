@@ -9,8 +9,8 @@ once games have been played:
         game replaced the score. Right if it was lower (or he sat out).
   PASS  Graded on how the slot finished: right if it ended at or above the score
         that was passed on. Only final once the slot is locked or the week is over.
-  HELD  A lock the math liked but the minimum-lock rule blocked. Graded like a
-        PASS, so we can see whether the minimum is paying off.
+  HELD  A lock the math liked but the lock floor blocked. Graded like a
+        PASS, so we can see whether the floor is paying off.
 
 If several runs repeat the same call (same player, same score, same week), it is
 graded once, under the first run that made it. The grading here is pure (no
@@ -139,7 +139,7 @@ def later_games(entry: dict, player_id: str, points_by_day: dict[date, float],
 
 @dataclass
 class Call:
-    """One piece of advice: lock, pass, or a lock held back by the minimum."""
+    """One piece of advice: lock, pass, or a lock held back by the floor."""
     run_id: int
     week_start: str
     kind: str              # LOCK, PASS, or HELD
@@ -202,7 +202,7 @@ def grade_lock(call: Call) -> None:
 def grade_pass(call: Call, outcomes: dict[str, SlotOutcome], names: dict[str, str]) -> None:
     """PASS / HELD: right if the slot finished at or above the score passed on."""
     if _locked_this_score(call, outcomes):
-        why = "you overrode the minimum and locked it" if call.kind == "HELD" else "you locked it anyway"
+        why = "you overrode the floor and locked it" if call.kind == "HELD" else "you locked it anyway"
         call.verdict, call.detail = IGNORED, why
         return
     o = outcomes.get(call.slot)

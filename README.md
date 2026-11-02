@@ -34,7 +34,7 @@ The key modeling point: **each player can only be locked once per week**, so eac
 1. **Value each player's week.** For every available player, the lock-in math gives the score we'd expect to end up locking from his remaining games (more games and a higher ceiling mean more value).
 2. **Match players to slots.** Pair players with open slots, one player per slot and respecting positions, to maximize the team's expected total. That's the classic *assignment problem*, solved exactly with the Hungarian algorithm (tested against brute force).
 3. **Choose locks for the whole lineup.** For every player with a score in hand, try locking him into each slot he's eligible for and compare the team's total (his score plus the best matching of everyone else) against passing. Take the best lock and repeat. A player with no games left gets locked in his best slot for free, since passing can't gain anything.
-4. **Respect the manager's rule of thumb.** Scores under a configurable minimum (`MIN_LOCK_POINTS`, default 25) are only locked when nobody else can fill the slot; otherwise the app shows the lock it would have made and leaves the call to you.
+4. **Respect the manager's rule of thumb.** 25 points is a *target* (`LOCK_TARGET_POINTS`): a lock below it is still recommended if the math likes it, just labeled "below your 25 target". The hard limit is a *floor* of 23, dropping to 20 on Sunday when the week is nearly over. Scores under the floor are only locked when nobody else can fill the slot; otherwise the app shows the lock it would have made and leaves the call to you.
 5. **Explain the moves in Sleeper terms.** A straight swap only works if the other player is eligible for the slot being vacated, and benching a player clears his last game, so the instructions follow those rules.
 
 It also suggests **free rolls**: if a slot's planned player doesn't play today, drop in a spare who does. If he goes off, lock him; if not, nothing is lost.
@@ -45,7 +45,7 @@ Every `advise` run is saved to `data/advice_log.json`, and `review` grades it on
 
 - **LOCK** is graded on the player's *next* game, because passing would have meant that game replaced the score. Right if it was lower, or he sat.
 - **PASS** is graded on how the slot finished: right if it ended at or above the score passed on.
-- **HELD** (a lock the minimum blocked) is graded like a PASS, which shows whether the minimum pays off.
+- **HELD** (a lock the floor blocked) is graded like a PASS, which shows whether the floor pays off.
 
 If I go against the advice it's marked separately instead of graded, and `note` lets me record why. A forecast check also compares each slot's expected value with what it really ended at.
 

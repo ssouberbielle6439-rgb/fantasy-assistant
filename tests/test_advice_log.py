@@ -13,7 +13,7 @@ WED, THU, FRI, SAT = date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30),
 def entry(run_id=1, slots=(), locks=(), held=(), games_left=None):
     """A saved advise run, shaped like the one cmd_advise writes."""
     return {"id": run_id, "time": "2026-10-28T14:00:00", "week": 1, "week_start": WEEK,
-            "first_day": "2026-10-28", "min_lock": 25.0, "slots": list(slots),
+            "first_day": "2026-10-28", "floor": 23.0, "target": 25.0, "slots": list(slots),
             "locks": list(locks), "held": list(held), "games_left": games_left or {},
             "names": {"quickley": "I. Quickley", "wemby": "V. Wembanyama", "white": "D. White",
                       "murray": "J. Murray"}, "notes": []}
@@ -92,7 +92,7 @@ def test_pass_ignored_when_you_locked_it_anyway():
 
 
 def test_held_lock_is_graded_like_a_pass_not_twice():
-    # White 22 is under the 25 minimum: he shows as PASS in the table AND as held.
+    # White 22 is under the 23 floor: he shows as PASS in the table AND as held.
     # It should count once, as HELD.
     e = entry(slots=[row("SG", "white", 22.0, "PASS", "white", 20.0)],
               held=[lock("white", "SG", "SG", 22.0)])

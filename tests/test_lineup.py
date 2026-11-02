@@ -3,7 +3,7 @@ import random
 from datetime import date
 
 from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, best_assignment, can_fill,
-                                      move_instructions, plan_week, player_values,
+                                      lock_floor, move_instructions, plan_week, player_values,
                                       recommend_locks, slot_labels)
 from fantasy_assistant import locks
 from fantasy_assistant.lockin import GameForecast
@@ -121,19 +121,26 @@ def test_pass_when_a_star_has_games_left():
     assert moves == []
 
 
-def test_minimum_lock_rule_and_its_exception():
+def test_25_is_a_target_the_floor_is_23_then_20_on_sunday():
+    # Santiago, 11/02: 25 is a target, not a minimum. Hold back only below the
+    # floor (23 through Saturday, 20 on Sunday); above it, the math decides.
+    assert lock_floor(date(2026, 10, 31)) == 23   # Saturday
+    assert lock_floor(date(2026, 11, 1)) == 20    # Sunday, last day of the fantasy week
     positions = {"a": {"C"}, "b": {"C"}}
-    # 22 beats a weak backup, but it's under the 25 minimum -> held back.
-    slots = [Slot("C", "C", "a", 22.0)]
     weak_night = GameForecast(12, 4, 0.97)
     weak = player_values(games(a=[(FRI, weak_night)], b=[(FRI, weak_night)]))
-    moves, held = recommend_locks(slots, weak, positions)
+    # 24 beats a weak backup: the old 25 minimum held it back, the 23 floor doesn't.
+    moves, held = recommend_locks([Slot("C", "C", "a", 24.0)], weak, positions, floor=23)
+    assert [m.player_id for m in moves] == ["a"] and held == []
+    # 22 is under Saturday's floor -> held back; on Sunday (floor 20) -> lock.
+    slots = [Slot("C", "C", "a", 22.0)]
+    moves, held = recommend_locks(slots, weak, positions, floor=23)
     assert moves == [] and [h.player_id for h in held] == ["a"]
-    # Same score with the minimum lowered -> lock.
-    moves, _ = recommend_locks(slots, weak, positions, min_lock=20)
+    moves, _ = recommend_locks(slots, weak, positions, floor=20)
     assert [m.player_id for m in moves] == ["a"]
-    # Nobody else can fill the slot -> lock even under the minimum.
-    moves, _ = recommend_locks(slots, player_values(games(a=[(FRI, weak_night)])), positions)
+    # Nobody else can fill the slot -> lock even under the floor.
+    alone = player_values(games(a=[(FRI, weak_night)]))
+    moves, _ = recommend_locks(slots, alone, positions, floor=23)
     assert [m.player_id for m in moves] == ["a"]
 
 
