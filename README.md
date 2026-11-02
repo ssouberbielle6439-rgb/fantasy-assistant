@@ -39,6 +39,16 @@ The key modeling point: **each player can only be locked once per week**, so eac
 
 It also suggests **free rolls**: if a slot's planned player doesn't play today, drop in a spare who does. If he goes off, lock him; if not, nothing is lost.
 
+## Checking the advice
+
+Every `advise` run is saved to `data/advice_log.json`, and `review` grades it once the games are played:
+
+- **LOCK** is graded on the player's *next* game, because passing would have meant that game replaced the score. Right if it was lower, or he sat.
+- **PASS** is graded on how the slot finished: right if it ended at or above the score passed on.
+- **HELD** (a lock the minimum blocked) is graded like a PASS, which shows whether the minimum pays off.
+
+If I go against the advice it's marked separately instead of graded, and `note` lets me record why. A forecast check also compares each slot's expected value with what it really ended at.
+
 An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
 
 ## Project layout
@@ -54,6 +64,7 @@ fantasy_assistant/
   status.py     # chance to play from Sleeper injury status (Out = next game only)
   lineup.py     # lineup slots, who can fill them, and each slot's lock bar
   locks.py      # remembers which slots are locked this week
+  advice_log.py # saves every piece of advice and grades it once the games are played
   __main__.py   # command-line entry point
 tests/          # automated tests, including regression tests from real league situations
 ```
@@ -70,7 +81,9 @@ python -m pytest            # run the tests
 python -m fantasy_assistant roster    # print your league and roster
 python -m fantasy_assistant profiles  # each player's numbers and lock-in bars
 python -m fantasy_assistant week      # who plays which day this week
-python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot
+python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot (saved to a log)
+python -m fantasy_assistant review    # how this week's saved advice turned out
+python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice #3
 ```
 
 ## Roadmap
@@ -82,6 +95,7 @@ python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot
 - [x] Know each player's remaining games this week (NBA schedule)
 - [x] Chance to play from Sleeper injury status, game by game
 - [x] Lock or pass for each lineup slot, using the whole roster and saved locks
+- [x] Advice log: save every recommendation and grade it against what happened
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Weight this season's games more heavily as the season goes on

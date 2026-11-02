@@ -38,10 +38,10 @@ def parse_answer(answer: str, labels: list[str], saved: list[str]) -> list[str] 
     'pg f util2' -> those slots (case doesn't matter)
     Returns None if the reply has a slot name that doesn't exist.
     """
-    # Windows PowerShell 5.1 puts an invisible byte-order mark (U+FEFF) at the
-    # start of piped input. str.strip() doesn't treat it as whitespace, so drop
-    # it first or '' and 'PG PF' both look like unknown slot names.
-    text = answer.replace("﻿", "").strip()
+    # Windows PowerShell 5.1 starts piped text with an invisible byte-order mark
+    # (U+FEFF). str.strip() doesn't treat it as whitespace, so drop it first or
+    # '' and 'PG PF' both look like unknown slot names.
+    text = answer.replace("\ufeff", "").strip()
     if not text:
         return saved
     if text.lower() == "none":

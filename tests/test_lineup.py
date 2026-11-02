@@ -131,9 +131,17 @@ def test_powershell_pipe_byte_order_mark_is_ignored():
     # Piping into advise from Windows PowerShell 5.1 prepends an invisible
     # byte-order mark; it printed "Didn't recognize that" before this fix.
     labels = ["PG", "PF", "UTIL1", "UTIL2"]
-    assert parse_answer("﻿", labels, ["PG"]) == ["PG"]            # "" keeps saved
-    assert parse_answer("﻿PG PF", labels, []) == ["PG", "PF"]     # slots still read
-    assert parse_answer("﻿none", labels, ["PG"]) == []
+    assert parse_answer("\ufeff", labels, ["PG"]) == ["PG"]            # "" keeps saved
+    assert parse_answer("\ufeffPG PF", labels, []) == ["PG", "PF"]     # slots still read
+    assert parse_answer("\ufeffnone", labels, ["PG"]) == []
+
+
+def test_powershell_piped_locks_keep_their_first_slot():
+    # `"PG F" | python -m fantasy_assistant advise` in PowerShell 5.1 arrives as
+    # "\ufeffPG F": the hidden mark made PG unknown and the saved locks were used instead.
+    labels = ["PG", "F", "UTIL1", "UTIL2"]
+    assert parse_answer("\ufeffPG F", labels, ["UTIL1"]) == ["PG", "F"]
+    assert parse_answer("\ufeff", labels, ["UTIL1"]) == ["UTIL1"]   # piped "" keeps saved
 
 
 def test_swap_instructions_follow_sleeper_rule():
