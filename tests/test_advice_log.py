@@ -8,6 +8,7 @@ from fantasy_assistant.advice_log import (FREE, IGNORED, PENDING, RIGHT, WRONG, 
 
 WEEK = "2026-10-26"
 WED, THU, FRI, SAT = date(2026, 10, 28), date(2026, 10, 29), date(2026, 10, 30), date(2026, 10, 31)
+FRIDAY_GAME = {"wemby": ["2026-10-30"], "white": ["2026-10-30"]}  # a game left after the advice
 
 
 def entry(run_id=1, slots=(), locks=(), held=(), games_left=None):
@@ -73,20 +74,20 @@ def test_pass_right_when_slot_ends_higher():
 
 
 def test_pass_wrong_when_slot_ends_lower():
-    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)])
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
     outcomes = {"C": SlotOutcome("wemby", 12.0, locked=False, final=True)}
     assert graded([e], outcomes)[("PASS", "wemby")].verdict == WRONG
 
 
 def test_pass_pending_while_slot_is_still_open():
-    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)])
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
     outcomes = {"C": SlotOutcome("wemby", 30.0, locked=False, final=False)}
     c = graded([e], outcomes)[("PASS", "wemby")]
     assert c.verdict == PENDING and "30.0" in c.detail
 
 
 def test_pass_ignored_when_you_locked_it_anyway():
-    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)])
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
     outcomes = {"C": SlotOutcome("wemby", 22.0, locked=True, final=True)}
     assert graded([e], outcomes)[("PASS", "wemby")].verdict == IGNORED
 
@@ -95,11 +96,23 @@ def test_held_lock_is_graded_like_a_pass_not_twice():
     # White 22 is under the 23 floor: he shows as PASS in the table AND as held.
     # It should count once, as HELD.
     e = entry(slots=[row("SG", "white", 22.0, "PASS", "white", 20.0)],
-              held=[lock("white", "SG", "SG", 22.0)])
+              held=[lock("white", "SG", "SG", 22.0)], games_left=FRIDAY_GAME)
     outcomes = {"SG": SlotOutcome("murray", 31.0, locked=True, final=True)}
     calls = graded([e], outcomes)
     assert ("PASS", "white") not in calls
     assert calls[("HELD", "white")].verdict == RIGHT
+
+
+def test_sunday_night_pass_and_held_with_no_games_left_arent_graded():
+    # Sunday 11/01 late: nobody had games left, yet advise showed PASS and
+    # "held back" calls that review then graded as if passing had a cost.
+    e = entry(slots=[row("UTIL2", "clingan", 11.4, "PASS"), row("SG", "white", 14.1, "PASS")],
+              held=[lock("white", "SG", "SG", 14.1)])
+    outcomes = {"UTIL2": SlotOutcome("clingan", 11.4, locked=False, final=True),
+                "SG": SlotOutcome("white", 14.1, locked=False, final=True)}
+    calls = graded([e], outcomes)
+    assert calls[("PASS", "clingan")].verdict == FREE
+    assert calls[("HELD", "white")].verdict == FREE
 
 
 # ---------- Repeats, forecasts, notes ----------

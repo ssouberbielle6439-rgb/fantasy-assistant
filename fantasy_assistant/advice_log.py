@@ -12,6 +12,9 @@ once games have been played:
   HELD  A lock the math liked but the lock floor blocked. Graded like a
         PASS, so we can see whether the floor is paying off.
 
+Any call for a player with no games left is FREE, not graded: he keeps his
+score by staying in the slot, so locking and passing were worth the same.
+
 If several runs repeat the same call (same player, same score, same week), it is
 graded once, under the first run that made it. The grading here is pure (no
 network), so it's easy to test; __main__.py fetches the data it needs.
@@ -201,6 +204,11 @@ def grade_lock(call: Call) -> None:
 
 def grade_pass(call: Call, outcomes: dict[str, SlotOutcome], names: dict[str, str]) -> None:
     """PASS / HELD: right if the slot finished at or above the score passed on."""
+    if not call.later:
+        # No games left: he keeps the score by staying in the slot, so locking
+        # and passing were worth the same. Nothing to grade (same as LOCK).
+        call.verdict, call.detail = FREE, "no games left, so passing cost nothing"
+        return
     if _locked_this_score(call, outcomes):
         why = "you overrode the floor and locked it" if call.kind == "HELD" else "you locked it anyway"
         call.verdict, call.detail = IGNORED, why
