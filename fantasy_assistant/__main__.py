@@ -175,24 +175,41 @@ def _build_profiles(player_ids, players, scoring) -> dict:
     return profiles
 
 
-def _ask_locks(slots, saved: dict[str, str]) -> list[str]:
-    from .locks import parse_answer
+def _ask_locks(slots, saved: dict[str, dict]) -> None:
+    """Ask which slots are locked and mark them (with the right score) on `slots`."""
+    from .locks import clean, lock_slots, parse_answer, typed_scores, unlocked_by
 
     labels = [s.label for s in slots]
-    # A saved lock only counts if the same player is still in that slot.
-    still_valid = [lab for lab, pid in saved.items()
-                   if any(s.label == lab and s.player_id == pid for s in slots)]
-    hint = ", ".join(still_valid) if still_valid else "none"
+    # Saved locks are never dropped silently: if Sleeper disagrees, it was
+    # already printed above, and Enter still keeps them.
+    kept = [lab for lab in saved if lab in labels]
+    hint = ", ".join(kept) if kept else "none"
     while True:
-        try:
-            answer = input(f"\nWhich slots are locked? (e.g. PG F UTIL2, 'none', "
-                           f"or Enter to keep: {hint}) > ")
-        except EOFError:
-            answer = ""
-        chosen = parse_answer(answer, labels, still_valid)
-        if chosen is not None:
-            return chosen
-        print(f"Didn't recognize that. Slot names are: {' '.join(labels)}")
+        answer = _read(f"\nWhich slots are locked? (e.g. PG F UTIL2, F=27.9 if Sleeper shows "
+                       f"the wrong score, 'none', or Enter to keep: {hint}) > ")
+        chosen = parse_answer(answer, labels, kept)
+        if chosen is None:
+            print(f"Didn't recognize that. Slot names are: {' '.join(labels)}")
+            continue
+        # Locks are permanent in Sleeper, so removing a saved one needs a 'yes'.
+        # With piped input there's no second line, so the saved locks stay.
+        removing = unlocked_by(chosen, kept)
+        if removing:
+            sure = _read(f"That removes {', '.join(removing)}, saved as locked. Locks are permanent "
+                         f"in Sleeper, so this is usually a typo. Type yes to remove "
+                         f"{'it' if len(removing) == 1 else 'them'}, or Enter to answer again > ")
+            if clean(sure).lower() not in ("yes", "y"):
+                continue
+        lock_slots(slots, chosen, saved, typed_scores(answer, labels), kept=not clean(answer))
+        return
+
+
+def _read(prompt: str) -> str:
+    """input(), but the end of piped input counts as pressing Enter."""
+    try:
+        return input(prompt)
+    except EOFError:
+        return ""
 
 
 def _sleeper_slots(league, roster, week_no: int) -> list:
@@ -237,15 +254,18 @@ def cmd_advise() -> int:
     week = schedule.fantasy_week(now.date())
     saved = locks.load(week[0])
 
+    def short(pid):
+        return _short_name(players.get(pid, {}))
+
     print(f"Week {week_no}: your lineup right now (scores from Sleeper)\n")
     for s in slots:
         name = _player_name(players.get(s.player_id, {})) if s.player_id else "(empty)"
-        mark = "  [saved as locked]" if saved.get(s.label) == s.player_id and s.player_id else ""
+        mark = "  [saved as locked]" if s.label in saved else ""
         print(f"  {s.label:<6} {name:<24} {s.score:6.1f}{mark}")
-    locked = _ask_locks(slots, saved)
-    for s in slots:
-        s.locked = s.label in locked
-    locks.save(week[0], {s.label: s.player_id for s in slots if s.locked and s.player_id})
+    for line in locks.disagreements(slots, saved, short):
+        print(f"  Note: {line}")
+    _ask_locks(slots, saved)
+    locks.save(week[0], locks.from_slots(slots))
 
     # Who can still fill slots this week: not on IR, not already locked in.
     unavailable = set(roster.get("reserve") or []) | {s.player_id for s in slots if s.locked}
@@ -269,9 +289,6 @@ def cmd_advise() -> int:
         for (day, game), chance in zip(sorted(slate.items()), chances):
             fc = GameForecast(prof.average, prof.swing, chance)
             future[day].append(FutureGame(pid, day, fc, game.opponent_of(team)))
-
-    def short(pid):
-        return _short_name(players.get(pid, {}))
 
     min_lock = float(os.getenv("MIN_LOCK_POINTS") or DEFAULT_MIN_LOCK)
     values = player_values(future)
@@ -480,14 +497,17 @@ def cmd_review(args: list[str]) -> int:
     _, league, roster, players = _load_my_team()
     today = date.today()
 
-    # How each slot stands now: Sleeper's score plus whether it's saved as locked.
+    # How each slot stands now: Sleeper's score, except that saved locks use
+    # their saved player and score (Sleeper's numbers for locked slots can be off).
     outcomes_by_week = {}
     for week_start, week_no in sorted({(e["week_start"], e["week"]) for e in entries}):
         saved = locks.load(date.fromisoformat(week_start))
         over = advice_log.week_is_over(week_start, today)
         outcomes = {}
-        for s in _sleeper_slots(league, roster, week_no):
-            is_locked = bool(s.player_id) and saved.get(s.label) == s.player_id
+        slots = _sleeper_slots(league, roster, week_no)
+        locks.lock_slots(slots, list(saved), saved, kept=True)
+        for s in slots:
+            is_locked = s.locked and bool(s.player_id)
             outcomes[s.label] = SlotOutcome(s.player_id, s.score, is_locked, over or is_locked)
         outcomes_by_week[week_start] = outcomes
 

@@ -184,6 +184,11 @@ class LockMove:
     score: float
     gain: float       # expected points this lock adds to the week vs passing
 
+    @property
+    def stays(self) -> bool:
+        """True if he's locked in the slot he's already in."""
+        return self.from_label == self.to_label
+
 
 def pass_values(slots: list[Slot], values: dict[str, float]) -> dict[str, float]:
     """Week values if every score in hand is passed on.
@@ -228,9 +233,12 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
                 if k.locked or not can_fill(k.kind, positions.get(pid, set())):
                     continue
                 k.locked = True
-                gain = score + plan_week(work, rest, positions).total - base.total
+                # Round once and compare rounded gains everywhere. Comparing a raw
+                # gain to a rounded one let floating-point noise (0.00000000000003)
+                # break ties, which moved Murray from PG to G for no gain.
+                gain = round(score + plan_week(work, rest, positions).total - base.total, 1)
                 k.locked = False
-                move = LockMove(pid, from_label, k.label, score, round(gain, 1))
+                move = LockMove(pid, from_label, k.label, score, gain)
                 # A player with no games left keeps his score anyway, so locking
                 # him in his best slot is free insurance against later mistakes.
                 free = pid not in values and gain > -0.05
@@ -238,11 +246,12 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
                     continue
                 nobody_else = not any(p != pid and v > 0 and can_fill(k.kind, positions.get(p, set()))
                                       for p, v in vals.items())
+                # On a tie, lock him where he already is: no Sleeper moves needed.
                 if score < min_lock and not nobody_else:
-                    if pid not in held or gain > held[pid].gain:
+                    if pid not in held or (gain, move.stays) > (held[pid].gain, held[pid].stays):
                         held[pid] = move
                     continue
-                if best is None or gain > best.gain:
+                if best is None or (gain, move.stays) > (best.gain, best.stays):
                     best = move
         if best is None:
             break

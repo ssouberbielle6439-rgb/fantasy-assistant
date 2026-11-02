@@ -36,7 +36,12 @@ SAME_SCORE = 0.05  # scores closer than this are the same game
 
 # ---------- Saving and notes ----------
 
-def load(path: Path = LOG_PATH) -> list[dict]:
+# Every function takes `path=None` and looks LOG_PATH up when it runs. A default
+# of `path=LOG_PATH` would be fixed when this file is imported, so pointing
+# LOG_PATH somewhere else (tests, scratch runs) would still write the real log.
+
+def load(path: Path | None = None) -> list[dict]:
+    path = path or LOG_PATH
     if not path.exists():
         return []
     return json.loads(path.read_text(encoding="utf-8"))
@@ -47,8 +52,9 @@ def _save_all(entries: list[dict], path: Path) -> None:
     path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
-def append(entry: dict, path: Path = LOG_PATH) -> int:
+def append(entry: dict, path: Path | None = None) -> int:
     """Save one advise run. Gives it the next id number and returns it."""
+    path = path or LOG_PATH
     entries = load(path)
     entry["id"] = max((e["id"] for e in entries), default=0) + 1
     entry.setdefault("notes", [])
@@ -58,9 +64,10 @@ def append(entry: dict, path: Path = LOG_PATH) -> int:
 
 
 def add_note(entry_id: int, text: str, slot: str | None = None,
-             path: Path = LOG_PATH) -> dict:
+             path: Path | None = None) -> dict:
     """Attach a note (e.g. why you disagreed) to a saved run. Raises KeyError
     if there's no run with that id."""
+    path = path or LOG_PATH
     entries = load(path)
     entry = next((e for e in entries if e["id"] == entry_id), None)
     if entry is None:

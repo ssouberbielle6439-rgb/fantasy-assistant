@@ -51,6 +51,8 @@ If I go against the advice it's marked separately instead of graded, and `note` 
 
 An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
 
+Sleeper's API doesn't say which slots are locked, and its per-slot scores can't be trusted for locked slots: one Sunday night the same request returned a different version of the week every minute or so, cycling a locked slot through the player's different games. So the app saves each lock **with its score** the moment it's told about it, uses that score from then on, and lets you type the right one (`F=27.9`) when Sleeper shows the wrong game.
+
 ## Project layout
 
 ```
@@ -63,7 +65,7 @@ fantasy_assistant/
   schedule.py   # the NBA season schedule (who plays which day)
   status.py     # chance to play from Sleeper injury status (Out = next game only)
   lineup.py     # lineup slots, who can fill them, and each slot's lock bar
-  locks.py      # remembers which slots are locked this week
+  locks.py      # remembers which slots are locked this week, and at what score
   advice_log.py # saves every piece of advice and grades it once the games are played
   __main__.py   # command-line entry point
 tests/          # automated tests, including regression tests from real league situations

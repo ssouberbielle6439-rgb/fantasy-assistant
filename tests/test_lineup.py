@@ -5,6 +5,7 @@ from datetime import date
 from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, best_assignment, can_fill,
                                       move_instructions, plan_week, player_values,
                                       recommend_locks, slot_labels)
+from fantasy_assistant import locks
 from fantasy_assistant.lockin import GameForecast
 from fantasy_assistant.locks import parse_answer
 
@@ -96,6 +97,23 @@ def test_lock_players_with_no_games_left_in_the_right_slot():
     assert [(m.player_id, m.to_label) for m in moves] == [("quickley", "SG")]
 
 
+def test_sunday_night_murray_stays_at_pg_instead_of_swapping_with_white():
+    # Real lineup, Sunday 11/01 after 7pm: nobody has games left, so every lock
+    # gains 0. Rounding noise used to break the tie and said "lock Murray in G",
+    # which swaps White into PG for nothing (Murray was already locked at PG).
+    kinds = ["PG", "SG", "G", "SF", "PF", "F", "C", "UTIL", "UTIL"]
+    lineup = [("murray", 28.8), ("quickley", 24.3), ("white", 14.1), ("george", 24.8),
+              ("smith", 30.1), ("mobley", 25.3), ("wemby", 44.5), ("kgeorge", 12.9),
+              ("clingan", 11.4)]
+    positions = {"murray": {"PG"}, "quickley": {"PG", "SG"}, "white": {"PG", "SG"},
+                 "george": {"PF", "SF", "SG"}, "smith": {"C", "PF"}, "mobley": {"C", "PF"},
+                 "wemby": {"C"}, "kgeorge": {"SF", "SG"}, "clingan": {"C"}}
+    slots = [Slot(label, kind, pid, score)
+             for label, kind, (pid, score) in zip(slot_labels(kinds), kinds, lineup)]
+    moves, held = recommend_locks(slots, {}, positions)
+    assert moves and all(m.from_label == m.to_label for m in moves + held)
+
+
 def test_pass_when_a_star_has_games_left():
     slots = [Slot("C", "C", "wemby", 22.0)]
     future = games(wemby=[(FRI, STAR)])
@@ -142,6 +160,113 @@ def test_powershell_piped_locks_keep_their_first_slot():
     labels = ["PG", "F", "UTIL1", "UTIL2"]
     assert parse_answer("\ufeffPG F", labels, ["UTIL1"]) == ["PG", "F"]
     assert parse_answer("\ufeff", labels, ["UTIL1"]) == ["UTIL1"]   # piped "" keeps saved
+
+
+def sunday_night_lineup():
+    """Sleeper's API on Sunday 11/01: Mobley and P. George locked at 27.9 in Sleeper,
+    but the matchup endpoint showed 25.3 and 24.8 for them."""
+    return [Slot("PG", "PG", "murray", 28.8), Slot("SF", "SF", "george", 24.8),
+            Slot("PF", "PF", "smith", 30.1), Slot("F", "F", "mobley", 25.3)]
+
+
+def test_mobley_and_george_keep_their_279_locks_when_sleeper_shows_other_games():
+    saved = {"F": {"player_id": "mobley", "score": 27.9},
+             "SF": {"player_id": "george", "score": 27.9}}
+    slots = sunday_night_lineup()
+    notes = locks.disagreements(slots, saved)
+    locks.lock_slots(slots, ["F", "SF"], saved, kept=True)
+    by_label = {s.label: s for s in slots}
+    assert by_label["F"].score == 27.9 and by_label["SF"].score == 27.9
+    assert by_label["F"].locked and not by_label["PG"].locked
+    assert len(notes) == 2 and "Sleeper's API now says 25.3" in notes[0] + notes[1]
+
+
+def test_typed_locked_score_fixes_what_sleeper_shows():
+    # Locked in Sleeper without telling the app, and the API shows the wrong game:
+    # "PG PF F=27.9 SF=27.9" sets the scores by hand.
+    slots = sunday_night_lineup()
+    labels = [s.label for s in slots]
+    answer = "﻿PG PF F=27.9 SF=27.9"
+    chosen = parse_answer(answer, labels, [])
+    assert chosen == ["PG", "PF", "F", "SF"]
+    locks.lock_slots(slots, chosen, {}, locks.typed_scores(answer, labels))
+    assert [s.score for s in slots] == [28.8, 27.9, 30.1, 27.9]
+    assert locks.from_slots(slots)["F"] == {"player_id": "mobley", "score": 27.9}
+    assert parse_answer("F=abc", labels, []) is None
+
+
+def test_saved_lock_isnt_erased_when_sleeper_shows_someone_else_there():
+    # A saved lock used to be dropped without a word (and the file overwritten)
+    # whenever Sleeper showed a different player in that slot. Enter now keeps
+    # it, with a note; typing the slots takes Sleeper's lineup.
+    saved = {"PG": {"player_id": "murray", "score": 28.8},
+             "PF": {"player_id": "smith", "score": 30.1}}
+    slots = [Slot("PG", "PG", "white", 14.1), Slot("PF", "PF", "smith", 31.7)]
+    assert "Sleeper shows white" in locks.disagreements(slots, saved)[0]
+    locks.lock_slots(slots, parse_answer("", ["PG", "PF"], list(saved)), saved, kept=True)
+    assert [(s.player_id, s.score, s.locked) for s in slots] == [("murray", 28.8, True),
+                                                                ("smith", 30.1, True)]
+    slots = [Slot("PG", "PG", "white", 14.1), Slot("PF", "PF", "smith", 31.7)]
+    locks.lock_slots(slots, ["PG", "PF"], saved)
+    assert [(s.player_id, s.score) for s in slots] == [("white", 14.1), ("smith", 30.1)]
+
+
+def test_lock_files_from_before_scores_were_saved_still_load(tmp_path, monkeypatch):
+    monkeypatch.setattr(locks, "DATA_DIR", tmp_path)
+    (tmp_path / "locks_2026-10-26.json").write_text('{"PG": "murray"}', encoding="utf-8")
+    saved = locks.load(date(2026, 10, 26))
+    assert saved == {"PG": {"player_id": "murray", "score": None}}
+    slots = [Slot("PG", "PG", "murray", 23.4)]
+    locks.lock_slots(slots, ["PG"], saved, kept=True)
+    assert slots[0].score == 23.4   # no saved score -> Sleeper's number
+
+
+def test_answers_typed_at_the_1942_prompt_keep_pg_pf_c():
+    # The prompt shows "Enter to keep: PG, PF, C", so answers get typed like that.
+    labels = ["PG", "SG", "G", "SF", "PF", "F", "C", "UTIL1", "UTIL2"]
+    for answer in ["PG, PF, C", "pg pf c", "  PG   PF  C  ", "pg,pf,c", "PG,\tPF, C "]:
+        assert parse_answer(answer, labels, []) == ["PG", "PF", "C"], answer
+    # Only 'none' means nothing is locked; a stray comma is asked again.
+    assert parse_answer(",", labels, ["PG"]) is None
+    assert parse_answer(" , , ", labels, ["PG"]) is None
+
+
+def ask_with(monkeypatch, answers, slots, saved):
+    """Run advise's lock prompt with these typed lines; then input ends, like a pipe."""
+    from fantasy_assistant.__main__ import _ask_locks
+
+    lines = iter(answers)
+
+    def fake_input(prompt):
+        try:
+            return next(lines)
+        except StopIteration:
+            raise EOFError
+    monkeypatch.setattr("builtins.input", fake_input)
+    _ask_locks(slots, saved)
+    return [s.label for s in slots if s.locked]
+
+
+def locked_at_1930():
+    saved = {"PG": {"player_id": "murray", "score": 28.8},
+             "PF": {"player_id": "smith", "score": 30.1},
+             "C": {"player_id": "wemby", "score": 44.5}}
+    slots = [Slot("PG", "PG", "murray", 23.4), Slot("PF", "PF", "smith", 30.1),
+             Slot("C", "C", "wemby", 44.5), Slot("UTIL1", "UTIL", "clingan", 11.4)]
+    return slots, saved
+
+
+def test_saved_locks_wiped_at_1942_now_need_a_yes_to_remove(monkeypatch):
+    # 11/01 19:42: the first run after the merge saved no locks, wiping PG, PF, C.
+    slots, saved = locked_at_1930()
+    assert ask_with(monkeypatch, ["none"], slots, saved) == ["PG", "PF", "C"]   # no yes: kept
+    slots, saved = locked_at_1930()
+    assert ask_with(monkeypatch, ["pg pf", "no", ""], slots, saved) == ["PG", "PF", "C"]
+    slots, saved = locked_at_1930()
+    assert ask_with(monkeypatch, ["none", "yes"], slots, saved) == []         # confirmed
+    slots, saved = locked_at_1930()
+    assert ask_with(monkeypatch, ["PG PF C UTIL1"], slots, saved) == ["PG", "PF", "C", "UTIL1"]
+    assert slots[0].score == 28.8    # adding a lock keeps the saved scores, no question asked
 
 
 def test_swap_instructions_follow_sleeper_rule():

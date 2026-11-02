@@ -135,6 +135,18 @@ def test_saving_and_notes(tmp_path):
         advice_log.add_note(99, "nope", path=path)
 
 
+def test_scratch_runs_write_where_log_path_points_not_the_real_log(tmp_path, monkeypatch):
+    # 11/01: a scratch run set advice_log.LOG_PATH, but append's default path had
+    # been fixed at import, so three test runs landed in the real advice log.
+    scratch = tmp_path / "scratch" / "advice_log.json"
+    monkeypatch.setattr(advice_log, "LOG_PATH", scratch)
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)])
+    del e["id"], e["notes"]
+    assert advice_log.append(e) == 1
+    advice_log.add_note(1, "scratch note")
+    assert scratch.exists() and advice_log.load()[0]["notes"][0]["text"] == "scratch note"
+
+
 def test_calls_follow_players_moved_by_a_swap():
     # Quickley locks in SG by swapping with White, so White now sits in PG.
     e = entry(slots=[row("PG", "white", 15.0, "PASS", "murray", 35.0),
