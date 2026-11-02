@@ -3,7 +3,7 @@ import random
 from datetime import date
 
 from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, best_assignment, can_fill,
-                                      lock_floor, move_instructions, plan_week, player_values,
+                                      final_scores, lock_floor, move_instructions, plan_week, player_values,
                                       recommend_locks, slot_labels)
 from fantasy_assistant import locks
 from fantasy_assistant.lockin import GameForecast
@@ -112,6 +112,19 @@ def test_sunday_night_murray_stays_at_pg_instead_of_swapping_with_white():
              for label, kind, (pid, score) in zip(slot_labels(kinds), kinds, lineup)]
     moves, held = recommend_locks(slots, {}, positions)
     assert moves and all(m.from_label == m.to_label for m in moves + held)
+
+
+def test_sunday_night_week_is_done_shows_final_scores_only():
+    # Sunday 11/01 late: nobody had games left, but advise still printed 0.0-point
+    # locks, "held back" lines, and the "keep UTIL open" tip.
+    slots = [Slot("PG", "PG", "murray", 28.8, locked=True), Slot("UTIL2", "UTIL", "clingan", 11.4)]
+    lines = final_scores(slots, {})
+    assert lines[0] == "Week's done: final scores"
+    assert "murray" in lines[2] and "locked" in lines[2] and "11.4" in lines[3]
+    assert "40.2" in lines[-1]                                       # total
+    assert final_scores(slots, {"clingan": 0.0}) is not None         # ruled out = no games
+    # A bench player with a game left could still replace an open slot: keep advising.
+    assert final_scores(slots, player_values(games(white=[(FRI, GUARD)]))) is None
 
 
 def test_pass_when_a_star_has_games_left():

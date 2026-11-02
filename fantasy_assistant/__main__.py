@@ -241,8 +241,8 @@ def cmd_advise() -> int:
 
     from . import advice_log, locks, schedule
     from .lineup import (LOCK_TARGET, FutureGame, alternatives, apply_moves, can_fill,
-                         depth_label, lock_floor, pass_values, plan_week, player_values,
-                         recommend_locks)
+                         depth_label, final_scores, lock_floor, pass_values, plan_week,
+                         player_values, recommend_locks)
     from .lockin import GameForecast
     from .status import play_chances
 
@@ -295,6 +295,12 @@ def cmd_advise() -> int:
     target = float(os.getenv("LOCK_TARGET_POINTS") or LOCK_TARGET)
     floor = lock_floor(now.date())
     values = player_values(future)
+
+    # Week's over for this lineup: no advice to give, just the final scores.
+    done = final_scores(slots, values, short)
+    if done:
+        print("\n" + "\n".join(done))
+        return 0
 
     # 1. Which scores in hand to lock, and in which slot.
     moves, held = recommend_locks(slots, values, positions, floor)

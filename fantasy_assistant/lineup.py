@@ -278,6 +278,21 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
     return moves, list(held.values())
 
 
+def final_scores(slots: list[Slot], values: dict[str, float], name=str) -> list[str] | None:
+    """The week's final scores, once nobody who could still fill a slot has a
+    game left (every remaining week value is 0). Then locking and passing are
+    worth the same, so lock advice and tips would only be noise. Returns None
+    while the week is still being played."""
+    if any(v > 0 for v in values.values()):
+        return None
+    lines = ["Week's done: final scores", ""]
+    for s in slots:
+        who = name(s.player_id) if s.player_id else "(empty)"
+        lines.append(f"  {s.label:<6} {who:<24} {s.score:6.1f}{'  locked' if s.locked else ''}")
+    lines.append(f"  {'Total':<31} {sum(s.score for s in slots):6.1f}")
+    return lines
+
+
 def apply_moves(slots: list[Slot], moves: list[LockMove], positions: dict[str, set[str]],
                 name=str) -> tuple[list[Slot], list[str]]:
     """Carry out the recommended locks on a copy of the lineup.
