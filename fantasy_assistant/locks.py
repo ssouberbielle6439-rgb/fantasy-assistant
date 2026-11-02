@@ -111,6 +111,15 @@ def typed_scores(answer: str, labels: list[str]) -> dict[str, float]:
     return scores
 
 
+def shown(slot, saved: dict[str, dict]) -> tuple[str | None, float]:
+    """The player and score to display for a slot: a saved lock's own record
+    (when it has a score) beats whatever Sleeper's API shows right now."""
+    lock = saved.get(slot.label)
+    if lock and lock["score"] is not None:
+        return lock["player_id"], lock["score"]
+    return slot.player_id, slot.score
+
+
 def disagreements(slots, saved: dict[str, dict], name=str) -> list[str]:
     """Where Sleeper's lineup doesn't match a saved lock, in words."""
     lines = []

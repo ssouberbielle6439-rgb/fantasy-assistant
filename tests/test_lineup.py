@@ -181,6 +181,17 @@ def test_mobley_and_george_keep_their_279_locks_when_sleeper_shows_other_games()
     assert len(notes) == 2 and "Sleeper's API now says 25.3" in notes[0] + notes[1]
 
 
+def test_first_table_shows_mobleys_saved_279_not_sleepers_253():
+    # The opening lineup table printed Sleeper's 25.3 for Mobley's locked F,
+    # even though the saved lock (27.9) is what the app actually uses.
+    saved = {"F": {"player_id": "mobley", "score": 27.9},
+             "PG": {"player_id": "murray", "score": None}}  # old file: no score saved
+    by_label = {s.label: s for s in sunday_night_lineup()}
+    assert locks.shown(by_label["F"], saved) == ("mobley", 27.9)
+    assert locks.shown(by_label["PG"], saved) == ("murray", 28.8)    # falls back to Sleeper
+    assert locks.shown(by_label["PF"], saved) == ("smith", 30.1)     # not locked
+
+
 def test_typed_locked_score_fixes_what_sleeper_shows():
     # Locked in Sleeper without telling the app, and the API shows the wrong game:
     # "PG PF F=27.9 SF=27.9" sets the scores by hand.

@@ -257,11 +257,13 @@ def cmd_advise() -> int:
     def short(pid):
         return _short_name(players.get(pid, {}))
 
-    print(f"Week {week_no}: your lineup right now (scores from Sleeper)\n")
+    print(f"Week {week_no}: your lineup right now (scores from Sleeper; "
+          f"locked slots show the saved score)\n")
     for s in slots:
-        name = _player_name(players.get(s.player_id, {})) if s.player_id else "(empty)"
+        pid, score = locks.shown(s, saved)
+        name = _player_name(players.get(pid, {})) if pid else "(empty)"
         mark = "  [saved as locked]" if s.label in saved else ""
-        print(f"  {s.label:<6} {name:<24} {s.score:6.1f}{mark}")
+        print(f"  {s.label:<6} {name:<24} {score:6.1f}{mark}")
     for line in locks.disagreements(slots, saved, short):
         print(f"  Note: {line}")
     _ask_locks(slots, saved)
