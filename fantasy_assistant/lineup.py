@@ -35,6 +35,13 @@ def can_fill(slot_kind: str, positions: set[str]) -> bool:
     return allowed is None or bool(allowed & positions)
 
 
+def slot_flexibility(slot_kind: str) -> int:
+    """How many positions can fill a slot type: 1 for PG/SG/SF/PF/C, 2 for G/F,
+    5 for UTIL (anyone). Lower means more restrictive."""
+    allowed = SLOT_ELIGIBILITY.get(slot_kind)
+    return 5 if allowed is None else len(allowed)
+
+
 def slot_labels(starting_positions: list[str]) -> list[str]:
     """['PG', 'UTIL', 'UTIL'] -> ['PG', 'UTIL1', 'UTIL2'] so every slot has a unique name."""
     labels = []
@@ -237,11 +244,16 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
                if not s.locked and s.player_id and s.score > 0]
     moves: list[LockMove] = []
     held: dict[str, LockMove] = {}
+    held_rank: dict[str, tuple] = {}
+    kind_of = {s.label: s.kind for s in work}
     while in_hand:
         base = plan_week(work, vals, positions)
         best = None
         for pid, from_label, score in in_hand:
             rest = {p: v for p, v in vals.items() if p != pid}
+            # A flexible slot left open is only worth something if someone else
+            # still has a game that could use it.
+            others_have_games = any(values.get(p, 0) > 0 for p in rest)
             for k in work:
                 if k.locked or not can_fill(k.kind, positions.get(pid, set())):
                     continue
@@ -259,13 +271,24 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
                     continue
                 nobody_else = not any(p != pid and v > 0 and can_fill(k.kind, positions.get(p, set()))
                                       for p, v in vals.items())
-                # On a tie, lock him where he already is: no Sleeper moves needed.
+                # Ties (equal gains): the plan doesn't value UTIL's flexibility, so
+                # prefer the most restrictive slot (PG/SG/SF/PF/C, then G/F, then
+                # UTIL) to keep UTIL open, then the slot he's already in (no Sleeper
+                # moves needed). The restrictive slot only wins if the move is clean
+                # (the slot is empty, or its player can take the slot being vacated;
+                # otherwise someone gets benched, clearing his score) and someone
+                # else still has games left.
+                occupant = k.player_id
+                clean = occupant in (None, pid) or can_fill(kind_of[from_label],
+                                                            positions.get(occupant, set()))
+                tie_slot = k.kind if clean and others_have_games else kind_of[from_label]
+                rank = (gain, -slot_flexibility(tie_slot), move.stays)
                 if score < floor and not nobody_else:
-                    if pid not in held or (gain, move.stays) > (held[pid].gain, held[pid].stays):
-                        held[pid] = move
+                    if pid not in held or rank > held_rank[pid]:
+                        held[pid], held_rank[pid] = move, rank
                     continue
-                if best is None or (gain, move.stays) > (best.gain, best.stays):
-                    best = move
+                if best is None or rank > best_rank:
+                    best, best_rank = move, rank
         if best is None:
             break
         moves.append(best)

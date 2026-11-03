@@ -2,7 +2,7 @@ import itertools
 import random
 from datetime import date
 
-from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, best_assignment, can_fill,
+from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, apply_moves, best_assignment, can_fill,
                                       final_scores, lock_floor, move_instructions, plan_week, player_values,
                                       recommend_locks, slot_labels)
 from fantasy_assistant import locks
@@ -112,6 +112,32 @@ def test_sunday_night_murray_stays_at_pg_instead_of_swapping_with_white():
              for label, kind, (pid, score) in zip(slot_labels(kinds), kinds, lineup)]
     moves, held = recommend_locks(slots, {}, positions)
     assert moves and all(m.from_label == m.to_label for m in moves + held)
+
+
+def test_tuesday_lock_k_george_in_sf_not_util2_to_keep_util_open():
+    # Tuesday 11/03: advise said lock K. George (SF/SG) in UTIL2 at 23.9. Locking
+    # him in SF gives the same expected points, and Santiago's strategy is to keep
+    # UTIL open and lock restrictive slots first.
+    slots = [Slot("SF", "SF", "pgeorge", 0.0), Slot("UTIL1", "UTIL", "clingan", 0.0),
+             Slot("UTIL2", "UTIL", "kgeorge", 23.9)]
+    positions = {"kgeorge": {"SF", "SG"}, "pgeorge": {"SF", "PF"}, "clingan": {"C"}}
+    future = games(kgeorge=[(FRI, ROLE)], pgeorge=[(WED, ROLE)], clingan=[(FRI, ROLE)])
+    moves, _ = recommend_locks(slots, player_values(future), positions)
+    assert [(m.player_id, m.to_label) for m in moves] == [("kgeorge", "SF")]
+    _, steps = apply_moves(slots, moves, positions)
+    assert steps == ["Swap kgeorge (UTIL2) with pgeorge (SF), then lock kgeorge in SF (23.9)."]
+
+
+def test_restrictive_tie_break_never_benches_someone_to_make_room():
+    # Mobley (C/PF) is done for the week, so locking him is free in F or C. C is
+    # more restrictive, but Wembanyama (C only) can't move to F: he'd be benched,
+    # clearing his score. So Mobley stays in F.
+    slots = [Slot("F", "F", "mobley", 26.0), Slot("C", "C", "wemby", 0.0),
+             Slot("UTIL", "UTIL", None, 0.0)]
+    positions = {"mobley": {"C", "PF"}, "wemby": {"C"}, "smith": {"C", "PF"}}
+    future = games(wemby=[(FRI, STAR)], smith=[(FRI, ROLE)])
+    moves, _ = recommend_locks(slots, player_values(future), positions)
+    assert [(m.player_id, m.to_label) for m in moves] == [("mobley", "F")]
 
 
 def test_sunday_night_week_is_done_shows_final_scores_only():
