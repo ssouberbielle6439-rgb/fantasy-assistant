@@ -219,5 +219,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Project data (downloaded stats, cached player lists, the database)
-data/
+# Project data (downloaded stats, cached player lists, the database).
+# The leading slash means only the top-level data/ folder, so tests/data/ is kept.
+/data/

@@ -64,7 +64,7 @@ def cmd_roster() -> int:
 
 
 def cmd_profiles() -> int:
-    from . import nba_stats
+    from . import gamelogs
     from .lockin import value_of_waiting
     from .profile import build_profile
 
@@ -72,22 +72,17 @@ def cmd_profiles() -> int:
     player_ids = roster.get("players") or []
     scoring = league["scoring_settings"]
 
-    print("Pulling game logs from NBA.com (first run takes a minute)...\n")
+    print("Pulling game logs from Sleeper...\n")
     print(f"{'Player':<24} {'Games':>5} {'Avg':>6} {'Swing':>6} {'Plays':>6}"
           f"   Lock if at least, with 1 / 2 / 3 games left")
-    unmatched = []
     failed = 0
     for pid in player_ids:
         name = _player_name(players.get(pid, {}))
-        nba_id = nba_stats.find_nba_id(name)
-        if nba_id is None:
-            unmatched.append(name)
-            continue
         try:
-            this_season = nba_stats.game_logs(nba_id, CURRENT_SEASON, is_current=True)
-            last_season = nba_stats.game_logs(nba_id, LAST_SEASON, is_current=False)
-        except nba_stats.NBAStatsUnavailable:
-            print(f"{name:<24}  NBA.com refused the connection, try again later")
+            this_season = gamelogs.season_games(pid, name, CURRENT_SEASON, is_current=True)
+            last_season = gamelogs.season_games(pid, name, LAST_SEASON, is_current=False)
+        except gamelogs.NoGameLogs as err:
+            print(f"{name:<24}  no game logs: {err}")
             failed += 1
             continue
         prof = build_profile(name, this_season + last_season, scoring, len(last_season))
@@ -102,11 +97,6 @@ def cmd_profiles() -> int:
     if failed:
         print(f"\n{failed} player(s) couldn't be downloaded. Anything already downloaded "
               "is saved, so rerunning only retries the missing ones.")
-    if unmatched:
-        print("\nCouldn't match these names to NBA.com (add them to NAME_OVERRIDES "
-              "in nba_stats.py):")
-        for name in unmatched:
-            print(f"  {name}")
     return 0
 
 
@@ -152,22 +142,18 @@ def cmd_week() -> int:
 
 
 def _build_profiles(player_ids, players, scoring) -> dict:
-    """Sleeper player id -> PlayerProfile, from cached NBA.com game logs."""
-    from . import nba_stats
+    """Sleeper player id -> PlayerProfile, from cached game logs (Sleeper, or NBA.com)."""
+    from . import gamelogs
     from .profile import build_profile
 
     profiles = {}
     for pid in player_ids:
         name = _player_name(players.get(pid, {}))
-        nba_id = nba_stats.find_nba_id(name)
-        if nba_id is None:
-            print(f"  (skipping {name}: couldn't match to NBA.com)")
-            continue
         try:
-            this_season = nba_stats.game_logs(nba_id, CURRENT_SEASON, is_current=True)
-            last_season = nba_stats.game_logs(nba_id, LAST_SEASON, is_current=False)
-        except nba_stats.NBAStatsUnavailable:
-            print(f"  (skipping {name}: NBA.com refused the connection)")
+            this_season = gamelogs.season_games(pid, name, CURRENT_SEASON, is_current=True)
+            last_season = gamelogs.season_games(pid, name, LAST_SEASON, is_current=False)
+        except gamelogs.NoGameLogs as err:
+            print(f"  (skipping {name}: {err})")
             continue
         prof = build_profile(name, this_season + last_season, scoring, len(last_season))
         if prof:
@@ -469,21 +455,18 @@ def _time_text(iso: str) -> str:
     return f"{t:%a %m/%d} {t.hour % 12 or 12}:{t:%M}{'am' if t.hour < 12 else 'pm'}"
 
 
-def _points_by_day(name: str, scoring: dict) -> dict:
-    """date -> fantasy points for a player's games this season (fresh from NBA.com)."""
+def _points_by_day(pid: str, name: str, scoring: dict) -> dict:
+    """date -> fantasy points for a player's games this season (refreshed within the hour)."""
     from datetime import datetime
 
-    from . import nba_stats
+    from . import gamelogs
     from .scoring import fantasy_points
 
-    nba_id = nba_stats.find_nba_id(name)
-    if nba_id is None:
-        print(f"  (can't check {name}: couldn't match to NBA.com)")
-        return {}
     try:
-        logs = nba_stats.game_logs(nba_id, CURRENT_SEASON, is_current=True, max_age=60 * 60)
-    except nba_stats.NBAStatsUnavailable:
-        print(f"  (can't check {name}: NBA.com refused the connection)")
+        logs = gamelogs.season_games(pid, name, CURRENT_SEASON, is_current=True,
+                                     max_age=60 * 60)
+    except gamelogs.NoGameLogs as err:
+        print(f"  (can't check {name}: {err})")
         return {}
     return {datetime.strptime(b["game_date"], "%b %d, %Y").date(): fantasy_points(b, scoring)
             for b in logs if b.get("game_date")}
@@ -523,9 +506,10 @@ def cmd_review(args: list[str]) -> int:
         outcomes_by_week[week_start] = outcomes
 
     # Box scores for everyone the advice was about.
-    print("Checking game logs on NBA.com...")
+    print("Checking game logs on Sleeper...")
     called = {c.player_id for e in entries for c in advice_log.calls_in(e)}
-    points = {pid: _points_by_day(_player_name(players.get(pid, {})), league["scoring_settings"])
+    points = {pid: _points_by_day(pid, _player_name(players.get(pid, {})),
+                                  league["scoring_settings"])
               for pid in called}
 
     calls = advice_log.review(entries, outcomes_by_week, points, today)

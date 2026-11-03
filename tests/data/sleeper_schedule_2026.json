@@ -1,0 +1,122 @@
+[
+ {
+  "status": "complete",
+  "date": "2026-10-30",
+  "week": 2,
+  "game_id": "1393285931942825984",
+  "home": {
+   "team": "DAL"
+  },
+  "away": {
+   "team": "HOU"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-30",
+  "week": 2,
+  "game_id": "1393285932274176000",
+  "home": {
+   "team": "PHX"
+  },
+  "away": {
+   "team": "DEN"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-26",
+  "week": 2,
+  "game_id": "1393723769662472192",
+  "home": {
+   "team": "HOU"
+  },
+  "away": {
+   "team": "ATL"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-26",
+  "week": 2,
+  "game_id": "1393723771256307712",
+  "home": {
+   "team": "DEN"
+  },
+  "away": {
+   "team": "GSW"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-27",
+  "week": 2,
+  "game_id": "1393723774267817984",
+  "home": {
+   "team": "LAL"
+  },
+  "away": {
+   "team": "POR"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-28",
+  "week": 2,
+  "game_id": "1393723781712707584",
+  "home": {
+   "team": "MIL"
+  },
+  "away": {
+   "team": "HOU"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-28",
+  "week": 2,
+  "game_id": "1393723785454026752",
+  "home": {
+   "team": "NOP"
+  },
+  "away": {
+   "team": "DEN"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-29",
+  "week": 2,
+  "game_id": "1393723790998896640",
+  "home": {
+   "team": "POR"
+  },
+  "away": {
+   "team": "MEM"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-31",
+  "week": 2,
+  "game_id": "1393723792869556224",
+  "home": {
+   "team": "UTA"
+  },
+  "away": {
+   "team": "POR"
+  }
+ },
+ {
+  "status": "complete",
+  "date": "2026-10-31",
+  "week": 2,
+  "game_id": "1393723797357461504",
+  "home": {
+   "team": "HOU"
+  },
+  "away": {
+   "team": "OKC"
+  }
+ }
+]

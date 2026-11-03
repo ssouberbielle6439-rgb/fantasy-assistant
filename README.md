@@ -60,7 +60,9 @@ fantasy_assistant/
   sleeper.py    # talks to Sleeper's free API (league, rosters, players)
   scoring.py    # turns a box score into fantasy points using MY league's scoring
   lockin.py     # the lock-or-pass engine
-  nba_stats.py  # downloads game logs from NBA.com (cached in data/)
+  sleeper_stats.py  # game logs from Sleeper's per-game stats, the main source (cached in data/)
+  nba_stats.py  # game logs from NBA.com, the fallback (cached in data/)
+  gamelogs.py   # tries Sleeper first, NBA.com if Sleeper fails
   profile.py    # turns game logs into each player's average, swing, and chance to play
   schedule.py   # the NBA season schedule (who plays which day)
   status.py     # chance to play from Sleeper injury status (Out = next game only)
@@ -98,6 +100,8 @@ python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice
 - [x] Chance to play from Sleeper injury status, game by game
 - [x] Lock or pass for each lineup slot, using the whole roster and saved locks
 - [x] Advice log: save every recommendation and grade it against what happened
+- [x] Game logs from Sleeper's own box scores (they include technical fouls, which NBA.com's don't), with NBA.com as the fallback
+- [ ] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Weight this season's games more heavily as the season goes on
@@ -109,5 +113,5 @@ python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice
 ## Data and credits
 
 - League data: [Sleeper API](https://docs.sleeper.com/) (free, read-only)
-- Game logs: NBA.com via [nba_api](https://github.com/swar/nba_api)
+- Game logs: Sleeper's per-game stats (unofficial), with NBA.com via [nba_api](https://github.com/swar/nba_api) as the fallback
 - License: MIT
