@@ -278,7 +278,7 @@ def cmd_advise() -> int:
             fc = GameForecast(prof.average, prof.swing, chance)
             future[day].append(FutureGame(pid, day, fc, game.opponent_of(team)))
 
-    target = float(os.getenv("LOCK_TARGET_POINTS") or LOCK_TARGET)
+    lock_target = float(os.getenv("LOCK_TARGET_POINTS") or LOCK_TARGET)
     floor = lock_floor(now.date())
     values = player_values(future)
 
@@ -294,7 +294,7 @@ def cmd_advise() -> int:
     if moves:
         print("\nRecommended locks (in this order):")
         for move, step in zip(moves, steps):
-            below = f"  [below your {target:.0f} target]" if move.score < target else ""
+            below = f"  [below your {lock_target:.0f} target]" if move.score < lock_target else ""
             print(f"  - {step}{below}")
         gain = sum(m.gain for m in moves)
         print(f"  These add about {gain:.1f} expected points to your week vs. passing.")
@@ -387,7 +387,7 @@ def cmd_advise() -> int:
         "week_start": week[0].isoformat(),
         "first_day": first_day.isoformat(),  # games from this day on were "still to come"
         "floor": floor,
-        "target": target,
+        "target": lock_target,
         "slots": rows,
         "locks": [move_dict(m) for m in moves],
         "held": [move_dict(h) for h in held],
