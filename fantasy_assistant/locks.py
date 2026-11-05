@@ -1,7 +1,8 @@
 """Remember which lineup slots are locked this week, and at what score.
 
 Sleeper's API shows each slot's score but not whether it's locked, so the
-app asks once and saves the answer in data/ for the rest of the week.
+app asks once and saves the answer for the rest of the week (in data/, or the
+folder STATE_DIR in .env names; see state.py).
 
 The score is saved too, because Sleeper's matchup numbers can't be trusted
 for locked slots: on Sunday night 11/01 the API changed every minute, with
@@ -16,11 +17,12 @@ import json
 from datetime import date
 from pathlib import Path
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+# state.use() moves this to the folder STATE_DIR names, when it's set.
+STATE_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
 def _path(week_start: date) -> Path:
-    return DATA_DIR / f"locks_{week_start.isoformat()}.json"
+    return STATE_DIR / f"locks_{week_start.isoformat()}.json"
 
 
 def load(week_start: date) -> dict[str, dict]:
@@ -38,8 +40,25 @@ def load(week_start: date) -> dict[str, dict]:
 
 
 def save(week_start: date, locks: dict[str, dict]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
     _path(week_start).write_text(json.dumps(locks, indent=2), encoding="utf-8")
+
+
+def merge(mine: dict, theirs: dict) -> tuple[dict, list[tuple[str, str, str]]]:
+    """Combine two computers' lock files for the same week, as saved on disk.
+
+    Every slot locked on either computer stays locked. If both locked the same
+    slot differently (another player or score), there's no way to tell which is
+    right, so `mine` is kept and the clash is returned as (slot, kept, other)
+    for the user to check against Sleeper's app.
+    """
+    merged, conflicts = dict(mine), []
+    for slot, lock in theirs.items():
+        if slot not in merged:
+            merged[slot] = lock
+        elif merged[slot] != lock:
+            conflicts.append((slot, json.dumps(merged[slot]), json.dumps(lock)))
+    return merged, conflicts
 
 
 def from_slots(slots) -> dict[str, dict]:

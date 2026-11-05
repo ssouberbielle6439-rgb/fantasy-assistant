@@ -1,6 +1,7 @@
 """Advice log: remember what `advise` said, then check it against what happened.
 
-Every `advise` run is saved to data/advice_log.json as one entry: each slot's
+Every `advise` run is saved to advice_log.json (in data/, or the folder
+STATE_DIR in .env names; see state.py) as one entry: each slot's
 status, the score in hand, who the slot was waiting on and his expected value,
 the recommended and held-back locks, and the time. `review` grades those calls
 once games have been played:
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+# state.use() moves this to the folder STATE_DIR names, when it's set.
 LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "advice_log.json"
 
 # Verdicts
@@ -50,8 +52,9 @@ def load(path: Path | None = None) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _save_all(entries: list[dict], path: Path) -> None:
-    path.parent.mkdir(exist_ok=True)
+def save_all(entries: list[dict], path: Path | None = None) -> None:
+    path = path or LOG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(entries, indent=2), encoding="utf-8")
 
 
@@ -62,8 +65,36 @@ def append(entry: dict, path: Path | None = None) -> int:
     entry["id"] = max((e["id"] for e in entries), default=0) + 1
     entry.setdefault("notes", [])
     entries.append(entry)
-    _save_all(entries, path)
+    save_all(entries, path)
     return entry["id"]
+
+
+def merge(mine: list[dict], theirs: list[dict]) -> list[dict]:
+    """Combine two computers' advice logs into one, keeping every run and note.
+
+    Runs are put in time order and renumbered 1, 2, 3, ... (review grades a
+    repeated call under the lowest-numbered run, so the numbers must follow
+    the clock). A run that's in both logs, e.g. from a copied file, is kept
+    once with the notes from both. Each run's notes are in time order too.
+    """
+    def same_run(entry):  # everything but the number and the notes
+        return json.dumps({k: v for k, v in entry.items() if k not in ("id", "notes")},
+                          sort_keys=True)
+
+    runs: dict[str, dict] = {}
+    for entry in mine + theirs:
+        key = same_run(entry)
+        if key not in runs:
+            runs[key] = {**entry, "notes": []}
+        for note in entry.get("notes", []):
+            if note not in runs[key]["notes"]:
+                runs[key]["notes"].append(note)
+
+    merged = sorted(runs.values(), key=lambda e: e["time"])  # ISO times sort as text
+    for number, entry in enumerate(merged, start=1):
+        entry["id"] = number
+        entry["notes"].sort(key=lambda n: n["time"])
+    return merged
 
 
 def add_note(entry_id: int, text: str, slot: str | None = None,
@@ -77,7 +108,7 @@ def add_note(entry_id: int, text: str, slot: str | None = None,
         raise KeyError(entry_id)
     entry.setdefault("notes", []).append(
         {"time": datetime.now().isoformat(timespec="seconds"), "slot": slot, "text": text})
-    _save_all(entries, path)
+    save_all(entries, path)
     return entry
 
 

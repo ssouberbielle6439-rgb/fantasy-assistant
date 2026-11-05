@@ -41,7 +41,7 @@ It also suggests **free rolls**: if a slot's planned player doesn't play today, 
 
 ## Checking the advice
 
-Every `advise` run is saved to `data/advice_log.json`, and `review` grades it once the games are played:
+Every `advise` run is saved to `advice_log.json`, and `review` grades it once the games are played. The log and the weekly lock files live in `data/` by default; set `STATE_DIR` in `.env` to keep them somewhere else, such as a private git repo so they sync between computers (`merge <folder>` combines two computers' copies, keeping every run and note in time order).
 
 - **LOCK** is graded on the player's *next* game, because passing would have meant that game replaced the score. Right if it was lower, or he sat.
 - **PASS** is graded on how the slot finished: right if it ended at or above the score passed on.
@@ -69,6 +69,7 @@ fantasy_assistant/
   lineup.py     # lineup slots, who can fill them, and each slot's lock bar
   locks.py      # remembers which slots are locked this week, and at what score
   advice_log.py # saves every piece of advice and grades it once the games are played
+  state.py      # where locks and the advice log are saved (STATE_DIR), and merging two copies
   __main__.py   # command-line entry point
 tests/          # automated tests, including regression tests from real league situations
 ```
@@ -88,6 +89,7 @@ python -m fantasy_assistant week      # who plays which day this week
 python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot (saved to a log)
 python -m fantasy_assistant review    # how this week's saved advice turned out
 python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice #3
+python -m fantasy_assistant merge data    # merge another folder's locks and advice log into STATE_DIR
 ```
 
 ## Roadmap

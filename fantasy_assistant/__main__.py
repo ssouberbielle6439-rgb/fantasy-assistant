@@ -6,6 +6,7 @@
     python -m fantasy_assistant advise     # LOCK or PASS for every lineup slot (saved to a log)
     python -m fantasy_assistant review     # how the saved advice turned out
     python -m fantasy_assistant note 7 PG locked him anyway   # note on saved advice #7
+    python -m fantasy_assistant merge data # merge another computer's locks and advice log
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from . import sleeper
+from . import sleeper, state
 
 CURRENT_SEASON = "2026-27"
 LAST_SEASON = "2025-26"
@@ -28,7 +29,6 @@ def _player_name(p: dict) -> str:
 
 def _load_my_team():
     """League, your roster's player ids, and Sleeper's player info."""
-    load_dotenv()
     username = os.getenv("SLEEPER_USERNAME")
     league_id = os.getenv("SLEEPER_LEAGUE_ID")
     if not username or not league_id:
@@ -567,14 +567,40 @@ def cmd_review(args: list[str]) -> int:
     return 0
 
 
+def cmd_merge(args: list[str]) -> int:
+    """Merge another folder's lock files and advice log into this computer's
+    state folder, e.g. `merge data` after setting STATE_DIR=notes/state."""
+    if len(args) != 1:
+        print("Usage: python -m fantasy_assistant merge <folder>   (e.g. merge data)")
+        return 1
+    source, target = state.state_dir(args[0]), state.state_dir(os.getenv("STATE_DIR"))
+    if source.resolve() == target.resolve():
+        print(f"{source} is already where your locks and advice log are saved. Set STATE_DIR "
+              f"in .env to the folder you want them in, then merge the old folder into it.")
+        return 1
+    if not source.is_dir():
+        print(f"No folder at {source}.")
+        return 1
+    print(f"Merging {source} into {target}:")
+    for line in state.merge_folder(source, target) or ["nothing to merge"]:
+        print(f"  {line}")
+    print(f"\nThe originals in {source} weren't changed. Once this looks right, you can "
+          f"delete the locks_*.json and advice_log.json files there.")
+    return 0
+
+
 def main() -> int:
+    load_dotenv()
+    state.use(state.state_dir(os.getenv("STATE_DIR")))  # where locks and the advice log live
     commands = {"roster": cmd_roster, "profiles": cmd_profiles, "week": cmd_week,
                 "advise": cmd_advise}
-    with_args = {"review": cmd_review, "note": cmd_note}  # these take extra words
+    with_args = {"review": cmd_review, "note": cmd_note,  # these take extra words
+                 "merge": cmd_merge}
     parser = argparse.ArgumentParser(prog="fantasy_assistant")
     parser.add_argument("command", nargs="?", default="roster",
                         choices=list(commands) + list(with_args))
-    parser.add_argument("args", nargs="*", help="for note: <number> [slot] text; for review: all")
+    parser.add_argument("args", nargs="*",
+                        help="for note: <number> [slot] text; for review: all; for merge: <folder>")
     args = parser.parse_args()
     if args.command in with_args:
         return with_args[args.command](args.args)

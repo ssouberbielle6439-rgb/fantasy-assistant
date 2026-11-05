@@ -269,7 +269,7 @@ def test_saved_lock_isnt_erased_when_sleeper_shows_someone_else_there():
 
 
 def test_lock_files_from_before_scores_were_saved_still_load(tmp_path, monkeypatch):
-    monkeypatch.setattr(locks, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(locks, "STATE_DIR", tmp_path)
     (tmp_path / "locks_2026-10-26.json").write_text('{"PG": "murray"}', encoding="utf-8")
     saved = locks.load(date(2026, 10, 26))
     assert saved == {"PG": {"player_id": "murray", "score": None}}

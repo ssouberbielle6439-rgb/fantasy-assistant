@@ -6,9 +6,12 @@ from fantasy_assistant import advice_log, locks, sleeper_stats
 @pytest.fixture(autouse=True)
 def keep_real_data_safe(tmp_path, monkeypatch):
     """Every test writes the advice log, lock files and Sleeper stats cache to a
-    temporary folder, never to data/ (that's Santiago's real season record)."""
+    temporary folder, never to data/ or notes/state/ (Santiago's real season
+    record). STATE_DIR is set too, so even code that reads .env stays here:
+    load_dotenv never overrides a setting that's already there."""
+    monkeypatch.setenv("STATE_DIR", str(tmp_path))
     monkeypatch.setattr(advice_log, "LOG_PATH", tmp_path / "advice_log.json")
-    monkeypatch.setattr(locks, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(locks, "STATE_DIR", tmp_path)
     monkeypatch.setattr(sleeper_stats, "DATA_DIR", tmp_path / "gamelogs")
 
 
