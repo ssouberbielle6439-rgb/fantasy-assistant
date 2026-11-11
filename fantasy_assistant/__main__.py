@@ -254,9 +254,9 @@ def cmd_advise() -> int:
     from datetime import datetime, timedelta
 
     from . import advice_log, locks, schedule, slot_scores
-    from .lineup import (LOCK_TARGET, FutureGame, alternatives, apply_moves, can_fill,
-                         depth_label, final_scores, lock_floor, pass_values, plan_week,
-                         player_values, recommend_locks)
+    from .lineup import (LOCK_TARGET, FutureGame, alternatives, apply_moves, depth_label,
+                         final_scores, lock_floor, pass_values, plan_week, player_values,
+                         recommend_locks, today_line, today_plan)
     from .lockin import GameForecast
     from .status import play_chances
 
@@ -385,28 +385,15 @@ def cmd_advise() -> int:
               f"\nkeep UTIL open as long as you can for late big games from anyone.")
 
     # 4. Today: start the planned player if he plays; otherwise a free roll.
+    # Each line says where the player comes from and who makes room (lineup.today_plan).
     if days and days[0] == now.date():
-        playing_today = {g.player_id: g for g in future.get(now.date(), [])}
-        planned = {p for p in plan.assignment.values() if p}
-        spares = sorted((p for p in playing_today if p not in planned and p not in locked_now),
-                        key=lambda p: values.get(p, 0), reverse=True)
-        lines = []
-        for x in after:
-            if x.locked:
-                continue
-            target = plan.assignment.get(x.label)
-            if target in playing_today:
-                lines.append(f"  {x.label:<6} <- {short(target)} ({playing_today[target].opponent})")
-                continue
-            spare = next((p for p in spares if can_fill(x.kind, positions.get(p, set()))), None)
-            if spare:
-                spares.remove(spare)
-                later = f", otherwise put {short(target)} in before his game" if target else ""
-                lines.append(f"  {x.label:<6} <- {short(spare)} ({playing_today[spare].opponent})"
-                             f"  free roll: lock him if he goes off{later}")
-        if lines:
+        playing_today = {g.player_id: g for g in future.get(now.date(), [])
+                         if g.player_id not in locked_now}
+        today = today_plan(after, plan, set(playing_today), values, positions)
+        if today:
             print("\nToday's plan for open slots:")
-            print("\n".join(lines))
+            for m in today:
+                print("  " + today_line(m, playing_today[m.player_id].opponent, short))
 
     print(f"\nWaiting on = the player planned for that slot; Exp = what you'd expect to lock"
           f" from him this week.\nEach player can only be locked once, so each slot waits on"

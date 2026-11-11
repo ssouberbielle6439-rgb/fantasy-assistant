@@ -357,3 +357,88 @@ def apply_moves(slots: list[Slot], moves: list[LockMove], positions: dict[str, s
 def move_instructions(slots: list[Slot], moves: list[LockMove],
                       positions: dict[str, set[str]], name=str) -> list[str]:
     return apply_moves(slots, moves, positions, name)[1]
+
+
+@dataclass(frozen=True)
+class TodayMove:
+    """Who starts in an open slot today, and how he gets there in Sleeper."""
+    label: str
+    player_id: str
+    planned: str | None              # the player this slot waits on this week
+    source: str | None               # the slot he's in now (this one = keep); None = bench
+    displaced: str | None = None     # who leaves this slot to make room
+    displaced_to: str | None = None  # the slot he moves to; None = bench
+    cleared: float = 0.0             # the score benching him clears (rule 4)
+
+
+def today_plan(slots: list[Slot], plan: WeekPlan, playing_today: set[str],
+               values: dict[str, float], positions: dict[str, set[str]]) -> list[TodayMove]:
+    """Today's starter for each open slot: the planned player if he plays today,
+    otherwise a spare who does (a free roll).
+
+    Then the moves that put everyone in place. A player pushed out of his slot
+    goes to an open slot left empty, if he can play it: moving between starting
+    slots keeps his score (rule 5), and when that slot is the one the incoming
+    player left, it's Sleeper's straight swap. Otherwise he's benched, which
+    clears his score (rule 4).
+    """
+    open_slots = [s for s in slots if not s.locked]
+    planned = {p for p in plan.assignment.values() if p}
+    spares = sorted((p for p in playing_today if p not in planned),
+                    key=lambda p: values.get(p, 0), reverse=True)
+    picks: dict[str, str] = {}
+    for s in open_slots:
+        target = plan.assignment.get(s.label)
+        if target in playing_today:
+            picks[s.label] = target
+            continue
+        # A spare already in the slot stays, so no one moves for nothing.
+        eligible = [p for p in spares if can_fill(s.kind, positions.get(p, set()))]
+        spare = s.player_id if s.player_id in eligible else next(iter(eligible), None)
+        if spare:
+            spares.remove(spare)
+            picks[s.label] = spare
+
+    # Where everyone ends up: picked players in their slots; a slot whose
+    # player was picked for another slot is left empty.
+    now = {s.label: s.player_id for s in open_slots}
+    after = {label: picks.get(label, None if p in picks.values() else p)
+             for label, p in now.items()}
+    score = {s.player_id: s.score for s in open_slots if s.player_id}
+    kind = {s.label: s.kind for s in open_slots}
+    pushed_out = [p for p in now.values() if p and p not in after.values()]
+    for q in sorted(pushed_out, key=lambda p: score[p], reverse=True):  # biggest score first
+        spot = next((label for label, p in after.items()
+                     if p is None and can_fill(kind[label], positions.get(q, set()))), None)
+        if spot:
+            after[spot] = q
+    final = {p: label for label, p in after.items() if p}
+    source = {p: label for label, p in now.items() if p}
+
+    moves = []
+    for s in open_slots:
+        p = picks.get(s.label)
+        if not p:
+            continue
+        q = s.player_id if s.player_id != p else None
+        to = final.get(q) if q else None
+        moves.append(TodayMove(s.label, p, plan.assignment.get(s.label), source.get(p), q, to,
+                               score[q] if q and to is None else 0.0))
+    return moves
+
+
+def today_line(m: TodayMove, opponent: str, name=str) -> str:
+    """One line of advise's "Today's plan for open slots"."""
+    where = ("keep" if m.source == m.label else
+             "from bench" if m.source is None else f"from {m.source}")
+    line = f"{m.label:<6} <- {name(m.player_id)} ({where}) {opponent}"
+    if m.displaced and m.displaced_to:
+        line += f"; {name(m.displaced)} moves to {m.displaced_to}"
+    elif m.displaced:
+        line += f"; bench {name(m.displaced)}"
+        if m.cleared > 0:
+            line += f" (warning: that clears his {m.cleared:.1f}, rule 4)"
+    if m.player_id != m.planned:
+        later = f", otherwise put {name(m.planned)} in before his game" if m.planned else ""
+        line += f"\n         free roll: lock him if he goes off{later}"
+    return line

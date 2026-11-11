@@ -4,7 +4,8 @@ from datetime import date
 
 from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, apply_moves, best_assignment, can_fill,
                                       final_scores, lock_floor, move_instructions, plan_week, player_values,
-                                      recommend_locks, slot_labels)
+                                      recommend_locks, slot_labels, today_line, today_plan,
+                                      WeekPlan)
 from fantasy_assistant import locks
 from fantasy_assistant.lockin import GameForecast
 from fantasy_assistant.locks import parse_answer
@@ -334,3 +335,68 @@ def test_swap_instructions_follow_sleeper_rule():
     assert steps[0].startswith("Swap Quickley (PG) with White (SG)")
     steps = move_instructions(slots, moves, {"white": {"SG"}}, name)
     assert "can't play PG" in steps[0] and "clears his 15.0" in steps[0]
+
+
+# ---------- Today's plan: where each player comes from ----------
+
+def todays_lineup():
+    """Open slots on a game day: K. George (SF) and Smith Jr. (PF) hold scores,
+    Fox (G) holds 13.3, UTIL2 is empty. P. George and Marshall are on the bench."""
+    return [Slot("G", "G", "fox", 13.3), Slot("SF", "SF", "kgeorge", 19.5),
+            Slot("PF", "PF", "smith", 17.0), Slot("UTIL2", "UTIL", None, 0.0),
+            Slot("C", "C", "clingan", 38.6, locked=True)]
+
+
+TODAY_POSITIONS = {"fox": {"PG"}, "kgeorge": {"SF", "SG"}, "smith": {"PF", "C"},
+                   "pgeorge": {"SG", "SF", "PF"}, "marshall": {"SF", "PF"}}
+
+
+def plan_for_today(slots, assignment, playing, values, positions=TODAY_POSITIONS):
+    plan = WeekPlan(assignment, values, sum(values.values()))
+    moves = today_plan(slots, plan, playing, values, positions)
+    return [today_line(m, "vs NYK") for m in moves]
+
+
+def test_todays_plan_says_where_each_player_comes_from_and_who_gets_benched():
+    # G waits on P. George (plays today, from the bench); PF on Smith (already
+    # there); SF on K. George (no game today), so Marshall gets a free roll.
+    # Fox and K. George are both pushed out, and only UTIL2 is left open: the
+    # bigger score (K. George's 19.5) moves there and keeps it; benching Fox
+    # clears his 13.3.
+    lines = plan_for_today(
+        todays_lineup(),
+        {"G": "pgeorge", "SF": "kgeorge", "PF": "smith", "UTIL2": None},
+        {"pgeorge", "smith", "marshall"},
+        {"pgeorge": 26.0, "kgeorge": 20.7, "smith": 19.2, "marshall": 15.0})
+    assert lines == [
+        "G      <- pgeorge (from bench) vs NYK; bench fox (warning: that clears his 13.3, "
+        "rule 4)",
+        "SF     <- marshall (from bench) vs NYK; kgeorge moves to UTIL2\n         free roll: "
+        "lock him if he goes off, otherwise put kgeorge in before his game",
+        "PF     <- smith (keep) vs NYK",
+    ]
+
+
+def test_todays_plan_swaps_only_when_the_pushed_out_player_can_play_the_slot_left_open():
+    # Marshall (SF/PF) is a spare in PF and gets the free roll in SF. PF is left
+    # open (Smith Jr. plays tomorrow; Marshall was only keeping it warm).
+    slots = [Slot("SF", "SF", "kgeorge", 19.5), Slot("PF", "PF", "marshall", 0.0)]
+    values = {"kgeorge": 20.7, "smith": 19.2, "marshall": 15.0}
+    plan = {"SF": "kgeorge", "PF": "smith"}
+    # K. George (SF/SG) can't play PF, so a straight swap doesn't work (rule 5).
+    [sf] = plan_for_today(slots, plan, {"marshall"}, values)
+    assert sf.startswith("SF     <- marshall (from PF) vs NYK; bench kgeorge (warning: "
+                         "that clears his 19.5, rule 4)")
+    # A pushed-out player who can play PF swaps into it and keeps his score.
+    forward = dict(TODAY_POSITIONS, kgeorge={"SF", "PF"})
+    [sf] = plan_for_today(slots, plan, {"marshall"}, values, forward)
+    assert sf.startswith("SF     <- marshall (from PF) vs NYK; kgeorge moves to PF\n")
+
+
+def test_todays_plan_keeps_a_spare_who_is_already_in_the_slot():
+    # Marshall is already in UTIL2 and plays today: he stays rather than being
+    # swapped for another spare.
+    slots = [Slot("UTIL2", "UTIL", "marshall", 0.0)]
+    [line] = plan_for_today(slots, {"UTIL2": "kgeorge"}, {"marshall", "pgeorge"},
+                            {"kgeorge": 20.7, "pgeorge": 26.0, "marshall": 15.0})
+    assert line.startswith("UTIL2  <- marshall (keep) vs NYK\n")
