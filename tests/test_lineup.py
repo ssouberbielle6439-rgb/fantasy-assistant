@@ -248,7 +248,7 @@ def test_typed_locked_score_fixes_what_sleeper_shows():
     assert chosen == ["PG", "PF", "F", "SF"]
     locks.lock_slots(slots, chosen, {}, locks.typed_scores(answer, labels))
     assert [s.score for s in slots] == [28.8, 27.9, 30.1, 27.9]
-    assert locks.from_slots(slots)["F"] == {"player_id": "mobley", "score": 27.9}
+    assert locks.from_slots(slots)["F"] == {"player_id": "mobley", "score": 27.9, "game_id": None}
     assert parse_answer("F=abc", labels, []) is None
 
 
@@ -272,7 +272,7 @@ def test_lock_files_from_before_scores_were_saved_still_load(tmp_path, monkeypat
     monkeypatch.setattr(locks, "STATE_DIR", tmp_path)
     (tmp_path / "locks_2026-10-26.json").write_text('{"PG": "murray"}', encoding="utf-8")
     saved = locks.load(date(2026, 10, 26))
-    assert saved == {"PG": {"player_id": "murray", "score": None}}
+    assert saved == {"PG": {"player_id": "murray", "score": None, "game_id": None}}
     slots = [Slot("PG", "PG", "murray", 23.4)]
     locks.lock_slots(slots, ["PG"], saved, kept=True)
     assert slots[0].score == 23.4   # no saved score -> Sleeper's number

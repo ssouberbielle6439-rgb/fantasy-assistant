@@ -9,6 +9,11 @@ for locked slots: on Sunday night 11/01 the API changed every minute, with
 Mobley's locked F slot showing 25.3 or 27.9 and Murray's locked PG slot
 showing each of his three games in turn. Once the app knows a lock, its own
 record wins.
+
+Since 11/05 the locked game's id is saved as well, and the game is re-scored
+every run (slot_scores.rescore_locks), so Sleeper's stat corrections come
+through. A typed score (F=27.9) is saved without a game, so it's never
+re-scored.
 """
 
 from __future__ import annotations
@@ -26,16 +31,18 @@ def _path(week_start: date) -> Path:
 
 
 def load(week_start: date) -> dict[str, dict]:
-    """Saved locks for the week: slot label -> {"player_id": ..., "score": ...}.
+    """Saved locks for the week: slot label -> {"player_id", "score", "game_id"}.
 
     Files saved before scores were kept hold just the player id; those come
-    back with score None (meaning: use Sleeper's number).
+    back with score None (meaning: use the slot's current score). Files saved
+    before 11/05 have no game_id; those come back with None (keep the score).
     """
     path = _path(week_start)
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    return {label: lock if isinstance(lock, dict) else {"player_id": lock, "score": None}
+    return {label: {"game_id": None, **lock} if isinstance(lock, dict)
+            else {"player_id": lock, "score": None, "game_id": None}
             for label, lock in raw.items()}
 
 
@@ -63,7 +70,7 @@ def merge(mine: dict, theirs: dict) -> tuple[dict, list[tuple[str, str, str]]]:
 
 def from_slots(slots) -> dict[str, dict]:
     """The locked slots of a lineup, in the shape save() expects."""
-    return {s.label: {"player_id": s.player_id, "score": s.score}
+    return {s.label: {"player_id": s.player_id, "score": s.score, "game_id": s.game_id}
             for s in slots if s.locked and s.player_id}
 
 
@@ -157,18 +164,22 @@ def disagreements(slots, saved: dict[str, dict], name=str) -> list[str]:
 
 
 def lock_slots(slots, chosen: list[str], saved: dict[str, dict],
-               typed: dict[str, float] | None = None, kept: bool = False) -> None:
+               typed: dict[str, float] | None = None, kept: bool = False) -> list:
     """Mark the chosen slots locked and settle each one's player and score.
 
     In order of trust:
-      * a score typed after '=' (e.g. F=27.9);
+      * a score typed after '=' (e.g. F=27.9), saved without a game;
       * the saved lock, if it's the same player Sleeper shows in that slot;
       * the saved lock even if Sleeper shows someone else there, when the
         user kept the saved locks (Enter): a locked slot can't change in Sleeper,
         so its numbers are the ones that are off;
-      * otherwise a new lock: Sleeper's player and score right now.
+      * otherwise a new lock: Sleeper's player, with the slot's current score.
+
+    Returns the new locks, so the caller can pick the game each was locked on
+    (slot_scores.settle_new_lock).
     """
     typed = typed or {}
+    new = []
     for s in slots:
         s.locked = s.label in chosen
         if not s.locked:
@@ -176,7 +187,11 @@ def lock_slots(slots, chosen: list[str], saved: dict[str, dict],
         lock = saved.get(s.label)
         if lock and (kept or lock["player_id"] == s.player_id):
             s.player_id = lock["player_id"]
+            s.game_id = lock.get("game_id")
             if lock["score"] is not None:
                 s.score = lock["score"]
+        elif s.label not in typed:
+            new.append(s)
         if s.label in typed:
-            s.score = typed[s.label]
+            s.score, s.game_id = typed[s.label], None
+    return new

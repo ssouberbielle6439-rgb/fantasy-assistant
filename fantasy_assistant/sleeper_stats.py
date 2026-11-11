@@ -180,7 +180,14 @@ def game_statuses(season: str, is_current: bool,
 
 def game_logs(sleeper_id: str, season: str, is_current: bool,
               max_age: float = CURRENT_SEASON_MAX_AGE) -> list[dict]:
-    """One player's finished games for a season ("2026-27"), most recent first.
+    """One player's finished games for a season ("2026-27"), most recent first."""
+    return played_games(*games_and_statuses(sleeper_id, season, is_current, max_age))
+
+
+def games_and_statuses(sleeper_id: str, season: str, is_current: bool,
+                       max_age: float = CURRENT_SEASON_MAX_AGE) -> tuple[dict, dict]:
+    """Every game of his we have ({game_id: game}, games he sat out included),
+    and the status of every game in the season ({game_id: status}).
 
     Past seasons are downloaded once. This season is downloaded again when the
     cache is older than `max_age` seconds, or older than the schedule: a game
@@ -199,4 +206,4 @@ def game_logs(sleeper_id: str, season: str, is_current: bool,
                f"&season={sleeper_season(season)}&grouping=week")
         saved = merge_games(saved, parse_player_games(_get_json(url)))
         cache.write_text(json.dumps(saved), encoding="utf-8")
-    return played_games(saved, statuses)
+    return saved, statuses

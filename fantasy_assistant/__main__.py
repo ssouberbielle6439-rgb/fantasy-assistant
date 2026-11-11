@@ -161,8 +161,9 @@ def _build_profiles(player_ids, players, scoring) -> dict:
     return profiles
 
 
-def _ask_locks(slots, saved: dict[str, dict]) -> None:
-    """Ask which slots are locked and mark them (with the right score) on `slots`."""
+def _ask_locks(slots, saved: dict[str, dict]) -> list:
+    """Ask which slots are locked and mark them (with the right score) on `slots`.
+    Returns the slots locked just now (not saved before, no score typed)."""
     from .locks import clean, lock_slots, parse_answer, typed_scores, unlocked_by
 
     labels = [s.label for s in slots]
@@ -186,8 +187,8 @@ def _ask_locks(slots, saved: dict[str, dict]) -> None:
                          f"{'it' if len(removing) == 1 else 'them'}, or Enter to answer again > ")
             if clean(sure).lower() not in ("yes", "y"):
                 continue
-        lock_slots(slots, chosen, saved, typed_scores(answer, labels), kept=not clean(answer))
-        return
+        return lock_slots(slots, chosen, saved, typed_scores(answer, labels),
+                          kept=not clean(answer))
 
 
 def _read(prompt: str) -> str:
@@ -198,8 +199,35 @@ def _read(prompt: str) -> str:
         return ""
 
 
+def _week_games(player_ids, days, scoring: dict, players: dict) -> dict:
+    """Sleeper player id -> his games this fantasy week that have started
+    (slot_scores.WeekGame), or None if Sleeper's stats couldn't be read, in
+    which case his slot keeps Sleeper's number.
+
+    Slot scores need fresh stats (a game that ended minutes ago must count), so
+    anything older than a minute is downloaded again: the schedule once, then
+    each player, since his cache is now older than the schedule.
+    """
+    from . import sleeper_stats
+    from .slot_scores import week_games
+
+    by_player = {}
+    for pid in dict.fromkeys(p for p in player_ids if p):  # each once, in order
+        try:
+            games, statuses = sleeper_stats.games_and_statuses(pid, CURRENT_SEASON,
+                                                               is_current=True, max_age=60)
+        except sleeper_stats.SleeperStatsUnavailable as err:
+            print(f"  (Sleeper stats failed for {_player_name(players.get(pid, {}))}: {err}; "
+                  f"using Sleeper's slot score)")
+            by_player[pid] = None
+            continue
+        by_player[pid] = week_games(games, statuses, days, scoring)
+    return by_player
+
+
 def _sleeper_slots(league, roster, week_no: int) -> list:
-    """Your starting slots for a week, with each slot's player and score from Sleeper."""
+    """Your starting slots for a week, with each slot's player and score from Sleeper.
+    Only the players are trusted; slot_scores replaces the scores with our own."""
     from .lineup import Slot, slot_labels
 
     mine = next(m for m in sleeper.get_matchups(league["league_id"], week_no)
@@ -225,7 +253,7 @@ def _short_name(p: dict) -> str:
 def cmd_advise() -> int:
     from datetime import datetime, timedelta
 
-    from . import advice_log, locks, schedule
+    from . import advice_log, locks, schedule, slot_scores
     from .lineup import (LOCK_TARGET, FutureGame, alternatives, apply_moves, can_fill,
                          depth_label, final_scores, lock_floor, pass_values, plan_week,
                          player_values, recommend_locks)
@@ -243,16 +271,30 @@ def cmd_advise() -> int:
     def short(pid):
         return _short_name(players.get(pid, {}))
 
-    print(f"Week {week_no}: your lineup right now (scores from Sleeper; "
-          f"locked slots show the saved score)\n")
+    # Sleeper's matchup gives the lineup; the scores come from Sleeper's box
+    # scores (slot_scores.py). Sleeper's own numbers are kept to cross-check.
+    sleeper_points = {s.label: s.score for s in slots}
+    by_player = _week_games([s.player_id for s in slots] + [lk["player_id"] for lk in saved.values()],
+                            week, league["scoring_settings"], players)
+    notes = slot_scores.rescore_locks(saved, by_player, short)
+    notes += locks.disagreements(slots, saved, short)
+    slot_scores.score_open_slots(slots, by_player)
+    notes += slot_scores.cross_check(slots, sleeper_points, by_player, saved, short)
+
+    print(f"Week {week_no}: your lineup right now (scores from Sleeper's box scores; "
+          f"locked slots show the saved game)\n")
     for s in slots:
         pid, score = locks.shown(s, saved)
         name = _player_name(players.get(pid, {})) if pid else "(empty)"
         mark = "  [saved as locked]" if s.label in saved else ""
         print(f"  {s.label:<6} {name:<24} {score:6.1f}{mark}")
-    for line in locks.disagreements(slots, saved, short):
+    for line in notes:
         print(f"  Note: {line}")
-    _ask_locks(slots, saved)
+    for s in _ask_locks(slots, saved):
+        note = slot_scores.settle_new_lock(s, by_player.get(s.player_id),
+                                           sleeper_points[s.label], short)
+        if note:
+            print(f"  Note: {note}")
     locks.save(week[0], locks.from_slots(slots))
 
     # Who can still fill slots this week: not on IR, not already locked in.
@@ -475,9 +517,9 @@ def _points_by_day(pid: str, name: str, scoring: dict) -> dict:
 def cmd_review(args: list[str]) -> int:
     """review      -> grade this week's saved advice (or the latest week with any)
     review all  -> every week"""
-    from datetime import date
+    from datetime import date, timedelta
 
-    from . import advice_log, locks
+    from . import advice_log, locks, slot_scores
     from .advice_log import IGNORED, PENDING, RIGHT, WRONG, SlotOutcome
 
     entries = advice_log.load()
@@ -491,14 +533,21 @@ def cmd_review(args: list[str]) -> int:
     _, league, roster, players = _load_my_team()
     today = date.today()
 
-    # How each slot stands now: Sleeper's score, except that saved locks use
-    # their saved player and score (Sleeper's numbers for locked slots can be off).
+    # How each slot stands now, scored the same way as advise: Sleeper's lineup,
+    # our scores from box scores, and saved locks with their saved game.
     outcomes_by_week = {}
     for week_start, week_no in sorted({(e["week_start"], e["week"]) for e in entries}):
-        saved = locks.load(date.fromisoformat(week_start))
+        monday = date.fromisoformat(week_start)
+        saved = locks.load(monday)
         over = advice_log.week_is_over(week_start, today)
         outcomes = {}
         slots = _sleeper_slots(league, roster, week_no)
+        by_player = _week_games([s.player_id for s in slots]
+                                + [lk["player_id"] for lk in saved.values()],
+                                [monday + timedelta(days=i) for i in range(7)],
+                                league["scoring_settings"], players)
+        slot_scores.rescore_locks(saved, by_player)
+        slot_scores.score_open_slots(slots, by_player)
         locks.lock_slots(slots, list(saved), saved, kept=True)
         for s in slots:
             is_locked = s.locked and bool(s.player_id)

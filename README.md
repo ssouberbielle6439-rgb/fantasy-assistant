@@ -51,7 +51,7 @@ If I go against the advice it's marked separately instead of graded, and `note` 
 
 An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
 
-Sleeper's API doesn't say which slots are locked, and its per-slot scores can't be trusted for locked slots: one Sunday night the same request returned a different version of the week every minute or so, cycling a locked slot through the player's different games. So the app saves each lock **with its score** the moment it's told about it, uses that score from then on, and lets you type the right one (`F=27.9`) when Sleeper shows the wrong game.
+Sleeper's API doesn't say which slots are locked, and its per-slot scores can't be trusted for locked slots: one Sunday night the same request returned a different version of the week every minute or so, cycling a locked slot through the player's different games. So the app takes only the lineup (who is in each slot) from Sleeper's matchup and works out every slot's score itself from Sleeper's per-game box scores: an open slot holds the player's latest finished game (0 if he sat it out), and a locked slot holds the game saved with the lock, re-scored every run so stat corrections come through. When its score and Sleeper's differ, it prints both and uses its own; you can still type the right one (`F=27.9`) when locking.
 
 ## Project layout
 
@@ -103,7 +103,7 @@ python -m fantasy_assistant merge data    # merge another folder's locks and adv
 - [x] Lock or pass for each lineup slot, using the whole roster and saved locks
 - [x] Advice log: save every recommendation and grade it against what happened
 - [x] Game logs from Sleeper's own box scores (they include technical fouls, which NBA.com's don't), with NBA.com as the fallback
-- [ ] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
+- [x] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Weight this season's games more heavily as the season goes on

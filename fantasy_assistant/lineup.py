@@ -61,6 +61,7 @@ class Slot:
     player_id: str | None
     score: float         # points from the last game played in this slot
     locked: bool = False
+    game_id: str | None = None  # Sleeper's id for that game (None = unknown, or typed in)
 
 
 @dataclass(frozen=True)
