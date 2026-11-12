@@ -100,16 +100,31 @@ def cmd_profiles() -> int:
     return 0
 
 
+def _today_statuses(today) -> dict[str, str] | None:
+    """{team: Sleeper's schedule status} for today's games, which says whether
+    each has tipped off. None (with a note) if the schedule can't be read."""
+    from . import sleeper_stats
+
+    try:
+        return sleeper_stats.team_statuses(CURRENT_SEASON, today)
+    except sleeper_stats.SleeperStatsUnavailable as err:
+        print(f"  (Couldn't read Sleeper's schedule: {err}. Counting today's games as "
+              f"started from 7pm.)")
+        return None
+
+
 def cmd_week() -> int:
-    from datetime import date
+    from datetime import datetime
 
     from . import schedule
     from .status import play_chances
 
     _, _, roster, players = _load_my_team()
     games = schedule.season_games(CURRENT_SEASON)
-    today = date.today()
+    now = datetime.now()
+    today = now.date()
     week = schedule.fantasy_week(today)
+    today_statuses = _today_statuses(today)
     injured_reserve = set(roster.get("reserve") or [])
 
     header = "".join(f"{d.strftime('%a %m/%d'):>10}" for d in week)
@@ -130,9 +145,13 @@ def cmd_week() -> int:
             cells += f"{text:>10}"
             if g and d >= today and pid not in injured_reserve:
                 per_day[d] += 1
-        left = sum(1 for d in slate if d >= today)
+        to_come = schedule.games_to_come(slate, team, now, today_statuses) if team else {}
+        left = len(to_come)
         chance = play_chances(status, left)
         next_txt = f"{chance[0]:.0%} to play" if chance else "no games left"
+        tipoff = schedule.tipoff_note(to_come, today)
+        if tipoff:
+            next_txt += f"; {tipoff}"
         label = (status or "") + (" IR" if pid in injured_reserve else "")
         print(f"{_player_name(p)[:22]:<22} {label:<7}{cells}   {left:>4}  {next_txt}")
 
@@ -303,8 +322,11 @@ def cmd_advise() -> int:
     print("\nLoading player profiles (cached game logs)...")
     profiles = _build_profiles(candidates, players, league["scoring_settings"])
 
-    # Games still to come. Today's games count if it's before 7pm (tip-off).
-    first_day = now.date() if now.hour < 19 else now.date() + timedelta(days=1)
+    # Games still to come. A game today counts until it tips off, which
+    # Sleeper's schedule shows (pre_game); without it, until 7pm.
+    today_statuses = _today_statuses(now.date())
+    started_day = today_statuses is None and now.hour >= schedule.FALLBACK_TIPOFF_HOUR
+    first_day = now.date() + timedelta(days=1) if started_day else now.date()
     days = [d for d in week if d >= first_day]
     games = schedule.season_games(CURRENT_SEASON)
     future: dict = {d: [] for d in days}
@@ -314,7 +336,8 @@ def cmd_advise() -> int:
     for pid, prof in profiles.items():
         p = players.get(pid, {})
         team = schedule.nba_team(p.get("team"))
-        slate = schedule.team_games(games, team, days) if team else {}
+        slate = (schedule.games_to_come(schedule.team_games(games, team, days), team, now,
+                                        today_statuses) if team else {})
         chances = play_chances(p.get("injury_status"), len(slate))
         for (day, game), chance in zip(sorted(slate.items()), chances):
             fc = GameForecast(prof.average, prof.swing, chance)
@@ -333,11 +356,14 @@ def cmd_advise() -> int:
     # 1. Which scores in hand to lock, and in which slot.
     moves, held = recommend_locks(slots, values, positions, floor)
     after, steps = apply_moves(slots, moves, positions, short)
+    plays_today = {g.player_id for g in future.get(now.date(), [])}  # games not started yet
     if moves:
         print("\nRecommended locks (in this order):")
         for move, step in zip(moves, steps):
             below = f"  [below your {lock_target:.0f} target]" if move.score < lock_target else ""
-            print(f"  - {step}{below}")
+            soon = (f"  [{schedule.LOCK_BEFORE_TIPOFF}]" if move.player_id in plays_today
+                    else "")
+            print(f"  - {step}{below}{soon}")
         gain = sum(m.gain for m in moves)
         print(f"  These add about {gain:.1f} expected points to your week vs. passing.")
     else:

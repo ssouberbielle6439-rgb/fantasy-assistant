@@ -1,4 +1,5 @@
 import json
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from fantasy_assistant import sleeper_stats
 from fantasy_assistant.scoring import fantasy_points
 from fantasy_assistant.sleeper_stats import (SleeperStatsUnavailable, merge_games,
                                              merge_statuses, parse_player_games,
-                                             played_games)
+                                             played_games, statuses_by_team)
 
 DATA = Path(__file__).parent / "data"
 
@@ -110,6 +111,40 @@ def test_finished_game_stays_finished_when_a_stale_schedule_says_in_game():
     # 11/02, 10:09pm: a 13-minute-old copy showed three finished games as in_game.
     assert merge_statuses({"g1": "complete"}, {"g1": "in_game"}) == {"g1": "complete"}
     assert merge_statuses({"g1": "pre_game"}, {"g1": "in_game"}) == {"g1": "in_game"}
+
+
+def test_started_game_never_goes_back_to_pre_game():
+    # A stale copy saying pre_game would make a game that tipped off look
+    # like it's still to come, so advise would wait on a game already going.
+    assert merge_statuses({"g1": "in_game"}, {"g1": "pre_game"}) == {"g1": "in_game"}
+    assert merge_statuses({"g1": "complete"}, {"g1": "pre_game"}) == {"g1": "complete"}
+    assert merge_statuses({"g1": "in_game"}, {"g1": "complete"}) == {"g1": "complete"}
+
+
+def test_postponed_replaces_pre_game_but_not_a_started_game():
+    assert merge_statuses({"g1": "pre_game"}, {"g1": "postponed"}) == {"g1": "postponed"}
+    assert merge_statuses({"g1": "in_game"}, {"g1": "postponed"}) == {"g1": "in_game"}
+
+
+def test_team_statuses_finds_each_teams_game_that_day(fake_sleeper):
+    statuses = sleeper_stats.team_statuses("2026-27", date(2026, 10, 31))
+    assert statuses == {"UTA": "complete", "POR": "complete", "HOU": "complete",
+                        "OKC": "complete", "MIL": "complete", "CLE": "complete"}
+
+
+def test_team_statuses_use_nba_com_team_codes():
+    teams = {"g1": ["2026-11-01", "GS", "NO"]}
+    assert statuses_by_team({"g1": "pre_game"}, teams, date(2026, 11, 1)) == {
+        "GSW": "pre_game", "NOP": "pre_game"}
+
+
+def test_team_statuses_downloads_the_schedule_if_teams_were_never_saved(fake_sleeper):
+    # A schedule cached before the teams file existed is fresh, but has no teams.
+    sleeper_stats.game_statuses("2026-27", is_current=True)
+    (sleeper_stats.DATA_DIR / "sleeper_teams_2026-27.json").unlink()
+    assert sleeper_stats.team_statuses("2026-27", date(2026, 10, 29)) == {
+        "POR": "complete", "MEM": "complete", "ATL": "complete", "CLE": "complete"}
+    assert len(fake_sleeper) == 2
 
 
 # ---------- Newest version of each game's line wins ----------

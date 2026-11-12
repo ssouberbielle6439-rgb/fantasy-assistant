@@ -9,11 +9,16 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MAX_AGE = 24 * 60 * 60
+
+# Without a status from Sleeper's schedule, a game today counts as started
+# from 7pm (most tip-offs are 7pm or later; some are as late as 10:30pm).
+FALLBACK_TIPOFF_HOUR = 19
+LOCK_BEFORE_TIPOFF = "plays today, lock before tip-off"
 
 # Sleeper sometimes uses short team codes; NBA.com uses these.
 TEAM_ALIASES = {"NO": "NOP", "GS": "GSW", "SA": "SAS", "NY": "NYK",
@@ -84,3 +89,35 @@ def team_games(games: list[Game], team: str, days: list[date]) -> dict[date, Gam
     """A team's games on the given days, keyed by day."""
     wanted = set(days)
     return {g.day: g for g in games if g.day in wanted and team in (g.home, g.away)}
+
+
+def still_to_come(day: date, now: datetime, status: str | None) -> bool:
+    """Whether a game on `day` hasn't started yet at `now`.
+
+    A game today is still to come while Sleeper's schedule says pre_game
+    (it flips to in_game within a few minutes of tip-off). With no status
+    (Sleeper's schedule couldn't be read, or doesn't list the game yet),
+    the old rule applies: today's games count as started from 7pm.
+    """
+    if day != now.date():
+        return day > now.date()
+    if status is None:
+        return now.hour < FALLBACK_TIPOFF_HOUR
+    return status == "pre_game"
+
+
+def games_to_come(slate: dict[date, Game], team: str, now: datetime,
+                  today_statuses: dict[str, str] | None) -> dict[date, Game]:
+    """The games in a team's slate that haven't started yet.
+
+    `today_statuses` is {team: status} for today's games (from
+    sleeper_stats.team_statuses), or None if it couldn't be read.
+    """
+    status = (today_statuses or {}).get(team)
+    return {d: g for d, g in slate.items() if still_to_come(d, now, status)}
+
+
+def tipoff_note(to_come: dict[date, Game], today: date) -> str:
+    """The warning for a player whose next game is today and hasn't started:
+    a score in hand must be locked before tip-off, or that game replaces it."""
+    return LOCK_BEFORE_TIPOFF if today in to_come else ""

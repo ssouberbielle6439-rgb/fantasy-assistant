@@ -116,17 +116,52 @@ def merge_games(saved: dict[str, dict], fresh: list[dict]) -> dict[str, dict]:
     return merged
 
 
+def parse_teams(data) -> dict[str, list[str]]:
+    """Schedule response -> {game_id: [date, home team, away team]}.
+
+    Games whose teams aren't set yet (NBA Cup knockout games) are left out.
+    """
+    teams = {}
+    for game in data:
+        home = (game.get("home") or {}).get("team")
+        away = (game.get("away") or {}).get("team")
+        if game.get("game_id") and game.get("date") and home and away:
+            teams[game["game_id"]] = [game["date"], home, away]
+    return teams
+
+
+# How far along a game is. A status never moves back down this list.
+# Postponed and canceled count as 0, so they can replace pre_game but never
+# a game that has started.
+_STAGE = {"pre_game": 0, "in_game": 1, "complete": 2}
+
+
 def merge_statuses(saved: dict[str, str], fresh: dict[str, str]) -> dict[str, str]:
-    """A finished game stays finished.
+    """Statuses only move forward: pre_game -> in_game -> complete.
 
     On 11/02 a stale copy of the schedule showed three finished games as
-    in_game again for two minutes, so a status never goes back from complete.
+    in_game again for two minutes. A stale copy could just as well show a
+    game that has tipped off as pre_game, which would make it look like it's
+    still to come, so a fresh status never replaces one that's further along.
     """
     merged = dict(saved)
     for game_id, status in fresh.items():
-        if saved.get(game_id) != "complete":
+        if _STAGE.get(status, 0) >= _STAGE.get(saved.get(game_id), 0):
             merged[game_id] = status
     return merged
+
+
+def statuses_by_team(statuses: dict[str, str], teams: dict[str, list[str]],
+                     day: date) -> dict[str, str]:
+    """{team: status} for the games on `day`. Team codes use NBA.com's spelling
+    (schedule.nba_team), the same as the week's schedule."""
+    from .schedule import nba_team
+
+    by_team = {}
+    for game_id, (game_day, home, away) in teams.items():
+        if game_day == day.isoformat() and game_id in statuses:
+            by_team[nba_team(home)] = by_team[nba_team(away)] = statuses[game_id]
+    return by_team
 
 
 def to_box(game: dict) -> dict:
@@ -166,16 +201,33 @@ def _age(path: Path) -> float:
 
 def game_statuses(season: str, is_current: bool,
                   max_age: float = CURRENT_SEASON_MAX_AGE) -> dict[str, str]:
-    """{game_id: status} for every game in a season ("2026-27"), cached."""
+    """{game_id: status} for every game in a season ("2026-27"), cached.
+
+    Each download also saves who plays each game (sleeper_teams_<season>.json),
+    which team_statuses needs to find a team's game today.
+    """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     cache = DATA_DIR / f"sleeper_schedule_{season}.json"
     saved = _load(cache)
     if saved and (not is_current or _age(cache) < max_age):
         return saved
-    fresh = parse_statuses(_get_json(f"/schedule/nba/regular/{sleeper_season(season)}"))
-    merged = merge_statuses(saved, fresh)
+    data = _get_json(f"/schedule/nba/regular/{sleeper_season(season)}")
+    merged = merge_statuses(saved, parse_statuses(data))
+    (DATA_DIR / f"sleeper_teams_{season}.json").write_text(json.dumps(parse_teams(data)),
+                                                            encoding="utf-8")
     cache.write_text(json.dumps(merged), encoding="utf-8")
     return merged
+
+
+def team_statuses(season: str, day: date, max_age: float = 60) -> dict[str, str]:
+    """{team: status} for the games on `day` (normally today), at most
+    `max_age` seconds old. Raises SleeperStatsUnavailable if the schedule
+    can't be downloaded."""
+    statuses = game_statuses(season, is_current=True, max_age=max_age)
+    teams_cache = DATA_DIR / f"sleeper_teams_{season}.json"
+    if not teams_cache.exists():  # schedule saved before teams were kept: download it now
+        statuses = game_statuses(season, is_current=True, max_age=0)
+    return statuses_by_team(statuses, _load(teams_cache), day)
 
 
 def game_logs(sleeper_id: str, season: str, is_current: bool,

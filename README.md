@@ -104,6 +104,7 @@ python -m fantasy_assistant merge data    # merge another folder's locks and adv
 - [x] Advice log: save every recommendation and grade it against what happened
 - [x] Game logs from Sleeper's own box scores (they include technical fouls, which NBA.com's don't), with NBA.com as the fallback
 - [x] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
+- [x] Tell whether today's games have tipped off from Sleeper's live schedule, instead of a fixed 7pm cutoff
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Weight this season's games more heavily as the season goes on
