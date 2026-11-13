@@ -533,7 +533,7 @@ def cmd_review(args: list[str]) -> int:
     from datetime import date, timedelta
 
     from . import advice_log, locks, slot_scores
-    from .advice_log import IGNORED, PENDING, RIGHT, WRONG, SlotOutcome
+    from .advice_log import PENDING, RIGHT, WRONG, SlotOutcome
 
     entries = advice_log.load()
     if not entries:
@@ -589,7 +589,8 @@ def cmd_review(args: list[str]) -> int:
             later = ", ".join(g.text() for g in c.later) or "no games left"
             repeat = f"  [repeated in #{', #'.join(map(str, c.also_in))}]" if c.also_in else ""
             print(f"  {c.kind:<4}  {what:<26} later: {later}")
-            print(f"        -> {c.verdict}: {c.detail}{repeat}")
+            mine_too = " (your override)" if c.override else ""
+            print(f"        -> {c.verdict}{mine_too}: {c.detail}{repeat}")
         for n in e.get("notes", []):
             print(f"  note{' (' + n['slot'] + ')' if n.get('slot') else ''}: {n['text']}")
 
@@ -597,8 +598,8 @@ def cmd_review(args: list[str]) -> int:
     counts = advice_log.tally(calls)
     print("\nHow the advice did (each call counted once):")
     meaning = {"LOCK": "graded on his next game",
-               "PASS": "graded on how the slot finished",
-               "HELD": "held back by the floor; right = the floor paid off"}
+               "PASS": "graded on his next game; right = it beat the score",
+               "HELD": "held back by the floor; right = his next game beat it"}
     total_right = total_graded = 0
     for kind in ("LOCK", "PASS", "HELD"):
         k = counts.get(kind)
@@ -608,15 +609,18 @@ def cmd_review(args: list[str]) -> int:
         total_right, total_graded = total_right + right, total_graded + graded
         score = f"{right} of {graded} right ({right / graded:.0%})" if graded else "none graded yet"
         extras = [f"{k[v]} {label}" for v, label in
-                  ((PENDING, "pending"), (IGNORED, "you went the other way"),
-                   (advice_log.FREE, "free (no games left)")) if k.get(v)]
+                  ((PENDING, "pending"), (advice_log.FREE, "free (no games left)")) if k.get(v)]
         print(f"  {kind:<4}  {score}" + (f"; {', '.join(extras)}" if extras else "")
               + f"   ({meaning[kind]})")
     if total_graded:
         print(f"  Overall: {total_right} of {total_graded} graded calls right "
               f"({total_right / total_graded:.0%})")
+    beat, overridden = advice_log.override_record(calls)
+    if overridden:
+        print(f"  Your overrides: {beat} of {overridden} beat the app "
+              "(you locked a score it said to pass on)")
 
-    pairs = advice_log.forecast_check(entries, outcomes_by_week)
+    pairs =advice_log.forecast_check(entries, outcomes_by_week)
     if pairs:
         diff = sum(actual - exp for exp, actual in pairs) / len(pairs)
         print(f"  Forecast check: {len(pairs)} finished slot(s) ended {abs(diff):.1f} points "
@@ -624,8 +628,8 @@ def cmd_review(args: list[str]) -> int:
     n_notes = sum(len(e.get("notes", [])) for e in entries)
     if n_notes:
         print(f"  Notes: {n_notes} (shown under their runs)")
-    print("\nPASS and HELD calls stay pending until the slot is locked (as saved by `advise`) "
-          "or the week ends.")
+    print("\nEvery call is graded on the player's next game; \"slot ended at\" is shown "
+          "for information only.")
     return 0
 
 

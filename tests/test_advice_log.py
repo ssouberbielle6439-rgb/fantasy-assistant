@@ -3,7 +3,7 @@ from datetime import date
 import pytest
 
 from fantasy_assistant import advice_log
-from fantasy_assistant.advice_log import (FREE, IGNORED, PENDING, RIGHT, WRONG, SlotOutcome,
+from fantasy_assistant.advice_log import (FREE, PENDING, RIGHT, WRONG, SlotOutcome,
                                           calls_in, forecast_check, review)
 
 WEEK = "2026-10-26"
@@ -64,32 +64,66 @@ def test_lock_pending_until_next_game_and_free_with_no_games():
     assert calls[("LOCK", "white")].verdict == FREE  # no games left: not graded
 
 
-# ---------- PASS / HELD: graded on how the slot finished ----------
+# ---------- PASS / HELD: graded on the player's next game, like LOCK ----------
 
-def test_pass_right_when_slot_ends_higher():
-    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)],
-              games_left={"wemby": ["2026-10-30"]})
-    outcomes = {"C": SlotOutcome("wemby", 45.2, locked=True, final=True)}
-    assert graded([e], outcomes)[("PASS", "wemby")].verdict == RIGHT
-
-
-def test_pass_wrong_when_slot_ends_lower():
+def test_pass_right_when_next_game_beats_it_even_if_the_slot_ends_lower():
+    # The slot's finish is shown, but doesn't decide the grade.
     e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
     outcomes = {"C": SlotOutcome("wemby", 12.0, locked=False, final=True)}
-    assert graded([e], outcomes)[("PASS", "wemby")].verdict == WRONG
+    c = graded([e], outcomes, points={"wemby": {FRI: 30.0}})[("PASS", "wemby")]
+    assert c.verdict == RIGHT and "slot ended at 12.0 (V. Wembanyama)" in c.detail
 
 
-def test_pass_pending_while_slot_is_still_open():
+def test_pass_wrong_when_next_game_is_lower_even_if_the_slot_ends_higher():
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
+    outcomes = {"C": SlotOutcome("wemby", 45.2, locked=True, final=True)}
+    c = graded([e], outcomes, points={"wemby": {FRI: 15.0}})[("PASS", "wemby")]
+    assert c.verdict == WRONG and "slot ended at 45.2" in c.detail
+
+
+def test_pass_and_lock_on_the_same_tied_game_are_mirror_images():
+    # A next game equal to the score: locking lost nothing, passing gained nothing.
+    e = entry(locks=[lock("quickley", "PG", "PG", 22.0)],
+              slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)],
+              games_left={"quickley": ["2026-10-30"], "wemby": ["2026-10-30"]})
+    calls = graded([e], points={"quickley": {FRI: 22.0}, "wemby": {FRI: 22.0}})
+    assert calls[("LOCK", "quickley")].verdict == RIGHT
+    assert calls[("PASS", "wemby")].verdict == WRONG
+
+
+def test_pass_pending_until_his_next_game_and_shows_the_slot_so_far():
     e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
     outcomes = {"C": SlotOutcome("wemby", 30.0, locked=False, final=False)}
-    c = graded([e], outcomes)[("PASS", "wemby")]
-    assert c.verdict == PENDING and "30.0" in c.detail
+    c = graded([e], outcomes, today=THU)[("PASS", "wemby")]
+    assert c.verdict == PENDING and "slot so far 30.0" in c.detail
 
 
-def test_pass_ignored_when_you_locked_it_anyway():
-    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0)], games_left=FRIDAY_GAME)
-    outcomes = {"C": SlotOutcome("wemby", 22.0, locked=True, final=True)}
-    assert graded([e], outcomes)[("PASS", "wemby")].verdict == IGNORED
+def test_pass_you_locked_anyway_is_still_graded_and_marked_as_your_override():
+    # The app said PASS on Wemby's 22.0 and White's 22.0 (held by the floor), you
+    # locked both anyway. Wemby's next game was 30.0 (the app was right), White's
+    # 18.0 (your override beat the app).
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0),
+                     row("SG", "white", 22.0, "PASS", "white", 20.0)],
+              held=[lock("white", "SG", "SG", 22.0)], games_left=FRIDAY_GAME)
+    outcomes = {"C": SlotOutcome("wemby", 22.0, locked=True, final=True),
+                "SG": SlotOutcome("white", 22.0, locked=True, final=True)}
+    calls = graded([e], outcomes, points={"wemby": {FRI: 30.0}, "white": {FRI: 18.0}})
+    wemby, white = calls[("PASS", "wemby")], calls[("HELD", "white")]
+    assert wemby.override and wemby.verdict == RIGHT and "you locked it anyway" in wemby.detail
+    assert white.override and white.verdict == WRONG and "overrode the floor" in white.detail
+    assert advice_log.override_record(list(calls.values())) == (1, 2)
+
+
+def test_override_record_leaves_out_pending_and_calls_you_followed():
+    e = entry(slots=[row("C", "wemby", 22.0, "PASS", "wemby", 41.0),
+                     row("PG", "quickley", 19.0, "PASS", "quickley", 25.0)],
+              games_left={"wemby": ["2026-10-30"], "quickley": ["2026-10-30"]})
+    outcomes = {"C": SlotOutcome("wemby", 22.0, locked=True, final=True)}  # overrode Wemby
+    calls = list(graded([e], outcomes, today=THU).values())  # Friday not played yet
+    assert advice_log.override_record(calls) == (0, 0)
+    calls = list(graded([e], outcomes, points={"wemby": {FRI: 12.0}, "quickley": {FRI: 10.0}})
+                 .values())
+    assert advice_log.override_record(calls) == (1, 1)  # Quickley's PASS wasn't overridden
 
 
 def test_held_lock_is_graded_like_a_pass_not_twice():
@@ -98,7 +132,7 @@ def test_held_lock_is_graded_like_a_pass_not_twice():
     e = entry(slots=[row("SG", "white", 22.0, "PASS", "white", 20.0)],
               held=[lock("white", "SG", "SG", 22.0)], games_left=FRIDAY_GAME)
     outcomes = {"SG": SlotOutcome("murray", 31.0, locked=True, final=True)}
-    calls = graded([e], outcomes)
+    calls = graded([e], outcomes, points={"white": {FRI: 27.5}})
     assert ("PASS", "white") not in calls
     assert calls[("HELD", "white")].verdict == RIGHT
 
@@ -113,6 +147,41 @@ def test_sunday_night_pass_and_held_with_no_games_left_arent_graded():
     calls = graded([e], outcomes)
     assert calls[("PASS", "clingan")].verdict == FREE
     assert calls[("HELD", "white")].verdict == FREE
+
+
+# ---------- Week 3 (11/02 to 11/08): real PASS calls from run #7, Thu 11/05 9:45am ----------
+
+WEEK3 = "2026-11-02"
+FRI_1106, SAT_1107, MON_1109 = date(2026, 11, 6), date(2026, 11, 7), date(2026, 11, 9)
+
+
+def week3_pass(pid, name, slot, score, games_left, points):
+    """Grade one of run #7's PASS calls against his real next game."""
+    e = {**entry(7, slots=[row(slot, pid, score, "PASS", pid, 20.0)],
+                 games_left={pid: games_left}), "week_start": WEEK3, "names": {pid: name}}
+    return review([e], {WEEK3: {}}, {pid: points}, MON_1109)[0]
+
+
+def test_week3_smith_jr_pass_at_17_0_right_his_next_game_was_25_8():
+    c = week3_pass("2445", "J. Smith Jr.", "PF", 17.0, ["2026-11-07"], {SAT_1107: 25.8})
+    assert c.verdict == RIGHT and c.detail.startswith("next game 25.8 beat it")
+
+
+def test_week3_mobley_pass_at_24_8_right_his_next_game_was_26_7():
+    c = week3_pass("2259", "E. Mobley", "F", 24.8, ["2026-11-06", "2026-11-07"],
+                   {FRI_1106: 26.7, SAT_1107: 16.6})  # only Friday's game counts
+    assert c.verdict == RIGHT and c.detail.startswith("next game 26.7 beat it")
+
+
+def test_week3_quickley_pass_at_18_0_wrong_he_sat_out_his_next_game():
+    c = week3_pass("2157", "I. Quickley", "G", 18.0, ["2026-11-06"], {})  # no box score: DNP
+    assert c.verdict == WRONG and c.later[0].dnp and c.detail.startswith("next game he sat")
+
+
+def test_week3_fox_pass_at_13_3_wrong_his_next_game_was_10_2():
+    c = week3_pass("1872", "D. Fox", "UTIL2", 13.3, ["2026-11-06", "2026-11-07"],
+                   {FRI_1106: 10.2, SAT_1107: 15.8})  # Saturday's better game doesn't count
+    assert c.verdict == WRONG and c.detail.startswith("next game 10.2, lower")
 
 
 # ---------- Repeats, forecasts, notes ----------

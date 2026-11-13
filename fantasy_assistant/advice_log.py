@@ -8,13 +8,25 @@ once games have been played:
 
   LOCK  Graded on the player's NEXT game, because passing would have meant that
         game replaced the score. Right if it was lower (or he sat out).
-  PASS  Graded on how the slot finished: right if it ended at or above the score
-        that was passed on. Only final once the slot is locked or the week is over.
+  PASS  Graded on the same next game, the other way round: right if it beat the
+        score that was passed on, wrong if it was lower or he sat out. How the
+        slot finished is shown too, as information only.
   HELD  A lock the math liked but the lock floor blocked. Graded like a
         PASS, so we can see whether the floor is paying off.
 
+Why the next game and not the slot (decided 11/12): the slot's final score
+mixes in everything that happened after the call (other players moved in,
+later locks, Santiago's own choices), so it doesn't say whether this one call
+was right. The next game is exactly what passing bet on, and grading LOCK and
+PASS on the same game makes them mirror images: for any next game, exactly one
+of the two calls is right.
+
 Any call for a player with no games left is FREE, not graded: he keeps his
 score by staying in the slot, so locking and passing were worth the same.
+
+If Santiago locked a score anyway after the app said PASS (or HELD), the app's
+call is still graded on the next game, and marked as his override. Since he did
+the opposite, his override beat the app whenever the app's call is WRONG.
 
 If several runs repeat the same call (same player, same score, same week), it is
 graded once, under the first run that made it. The grading here is pure (no
@@ -33,7 +45,6 @@ LOG_PATH = Path(__file__).resolve().parent.parent / "data" / "advice_log.json"
 
 # Verdicts
 RIGHT, WRONG, PENDING = "RIGHT", "WRONG", "PENDING"
-IGNORED = "IGNORED"  # you went the other way, so the call can't be graded on the slot
 FREE = "FREE"        # a lock with no games left: nothing to lose, so not graded
 
 SAME_SCORE = 0.05  # scores closer than this are the same game
@@ -186,6 +197,7 @@ class Call:
     later: list[GameResult] = field(default_factory=list)
     verdict: str = PENDING
     detail: str = ""
+    override: bool = False  # PASS/HELD: you locked this score anyway
 
     def key(self) -> tuple:
         return (self.week_start, self.kind, self.player_id, round(self.score, 1))
@@ -233,28 +245,45 @@ def grade_lock(call: Call) -> None:
         call.verdict, call.detail = WRONG, f"next game {nxt.points:.1f} would have beaten it"
 
 
+def slot_text(call: Call, outcomes: dict[str, SlotOutcome], names: dict[str, str]) -> str:
+    """How the slot the call was about finished (or stands so far). Information
+    only: it isn't used for the grade."""
+    o = outcomes.get(call.slot)
+    if o is None:
+        return ""
+    who = names.get(o.player_id, "?") if o.player_id else "nobody"
+    return f"slot {'ended at' if o.final else 'so far'} {o.score:.1f} ({who})"
+
+
 def grade_pass(call: Call, outcomes: dict[str, SlotOutcome], names: dict[str, str]) -> None:
-    """PASS / HELD: right if the slot finished at or above the score passed on."""
+    """PASS / HELD: right if his next game beat the score passed on.
+
+    The mirror image of grade_lock: a tie or a DNP means passing gained
+    nothing, so it's wrong here and right for a LOCK.
+    """
+    slot = slot_text(call, outcomes, names)
     if not call.later:
         # No games left: he keeps the score by staying in the slot, so locking
         # and passing were worth the same. Nothing to grade (same as LOCK).
         call.verdict, call.detail = FREE, "no games left, so passing cost nothing"
         return
-    if _locked_this_score(call, outcomes):
-        why = "you overrode the floor and locked it" if call.kind == "HELD" else "you locked it anyway"
-        call.verdict, call.detail = IGNORED, why
-        return
-    o = outcomes.get(call.slot)
-    if o is None:
-        call.verdict, call.detail = PENDING, "no Sleeper data for this slot"
-        return
-    who = names.get(o.player_id, "?") if o.player_id else "nobody"
-    if not o.final:
-        call.verdict, call.detail = PENDING, f"slot so far {o.score:.1f} ({who}), not locked"
-    elif o.score >= call.score - SAME_SCORE:
-        call.verdict, call.detail = RIGHT, f"slot ended at {o.score:.1f} ({who})"
+    nxt = call.later[0]
+    # Locking it anyway doesn't stop us grading the app's call: his next game
+    # is still what passing would have bet on.
+    call.override = _locked_this_score(call, outcomes)
+    if nxt.points is None:
+        call.verdict, call.detail = PENDING, f"next game {nxt.day:%a}"
+    elif nxt.points > call.score:
+        call.verdict, call.detail = RIGHT, f"next game {nxt.points:.1f} beat it"
     else:
-        call.verdict, call.detail = WRONG, f"slot ended at {o.score:.1f} ({who})"
+        how = "he sat" if nxt.dnp else f"{nxt.points:.1f}, " + (
+            "lower" if nxt.points < call.score else "no better")
+        call.verdict, call.detail = WRONG, f"next game {how}"
+    if call.override:
+        why = "you overrode the floor and locked it" if call.kind == "HELD" else "you locked it anyway"
+        call.detail += f"; {why}"
+    elif slot:  # an override's slot is just the score you locked, already shown
+        call.detail += f"; {slot}"
 
 
 def review(entries: list[dict], outcomes_by_week: dict[str, dict[str, SlotOutcome]],
@@ -295,6 +324,13 @@ def forecast_check(entries: list[dict],
             if o and o.final:
                 pairs.append((r["expected"], o.score))
     return pairs
+
+
+def override_record(calls: list[Call]) -> tuple[int, int]:
+    """(beat the app, graded) for the calls you overrode. You did the opposite
+    of the app, so your override won whenever the app's call was WRONG."""
+    graded = [c for c in calls if c.override and c.verdict in (RIGHT, WRONG)]
+    return sum(c.verdict == WRONG for c in graded), len(graded)
 
 
 def tally(calls: list[Call]) -> dict[str, dict[str, int]]:

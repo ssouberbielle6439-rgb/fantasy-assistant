@@ -44,10 +44,12 @@ It also suggests **free rolls**: if a slot's planned player doesn't play today, 
 Every `advise` run is saved to `advice_log.json`, and `review` grades it once the games are played. The log and the weekly lock files live in `data/` by default; set `STATE_DIR` in `.env` to keep them somewhere else, such as a private git repo so they sync between computers (`merge <folder>` combines two computers' copies, keeping every run and note in time order).
 
 - **LOCK** is graded on the player's *next* game, because passing would have meant that game replaced the score. Right if it was lower, or he sat.
-- **PASS** is graded on how the slot finished: right if it ended at or above the score passed on.
+- **PASS** is graded on the same next game, the other way round: right if it beat the score passed on, wrong if it was lower or he sat. How the slot finished is shown too, but only as information.
 - **HELD** (a lock the floor blocked) is graded like a PASS, which shows whether the floor pays off.
 
-If I go against the advice it's marked separately instead of graded, and `note` lets me record why. A forecast check also compares each slot's expected value with what it really ended at.
+Grading both on the next game makes LOCK and PASS mirror images, so exactly one of them is right for any game. An earlier version graded PASS on how the slot finished, but that mixes in everything that happened afterwards (other players moving in, later locks), so it didn't say whether the call itself was right.
+
+If I lock a score the app said to pass on, its call is still graded on the next game and marked as my override, and `review` keeps score: "Your overrides: X of Y beat the app." `note` lets me record why I went the other way. A forecast check also compares each slot's expected value with what it really ended at.
 
 An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
 
