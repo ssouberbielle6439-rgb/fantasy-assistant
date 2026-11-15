@@ -85,7 +85,7 @@ def cmd_profiles() -> int:
             print(f"{name:<24}  no game logs: {err}")
             failed += 1
             continue
-        prof = build_profile(name, this_season + last_season, scoring, len(last_season))
+        prof = build_profile(name, this_season, last_season, scoring)
         if prof is None:
             print(f"{name:<24}  not enough games yet")
             continue
@@ -174,7 +174,7 @@ def _build_profiles(player_ids, players, scoring) -> dict:
         except gamelogs.NoGameLogs as err:
             print(f"  (skipping {name}: {err})")
             continue
-        prof = build_profile(name, this_season + last_season, scoring, len(last_season))
+        prof = build_profile(name, this_season, last_season, scoring)
         if prof:
             profiles[pid] = prof
     return profiles

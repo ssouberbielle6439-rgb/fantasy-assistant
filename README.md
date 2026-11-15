@@ -74,6 +74,7 @@ fantasy_assistant/
   state.py      # where locks and the advice log are saved (STATE_DIR), and merging two copies
   __main__.py   # command-line entry point
 tests/          # automated tests, including regression tests from real league situations
+scripts/        # one-off checks against real data, e.g. how the player averages were tuned
 ```
 
 ## Setup (Windows, PowerShell)
@@ -107,9 +108,9 @@ python -m fantasy_assistant merge data    # merge another folder's locks and adv
 - [x] Game logs from Sleeper's own box scores (they include technical fouls, which NBA.com's don't), with NBA.com as the fallback
 - [x] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
 - [x] Tell whether today's games have tipped off from Sleeper's live schedule, instead of a fixed 7pm cutoff
+- [x] Weight this season's games more as the season goes on, tuned by replaying this season's games (`scripts/backtest_profiles.py`)
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
-- [ ] Weight this season's games more heavily as the season goes on
 - [ ] Read injury news with Gemini to sharpen chance-to-play
 - [ ] Store data in DuckDB
 - [ ] Web page (FastAPI) showing lock or pass for every player
