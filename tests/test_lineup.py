@@ -1,10 +1,11 @@
 import itertools
 import random
-from datetime import date
+from datetime import date, datetime
 
+from fantasy_assistant.schedule import Game, games_that_count
 from fantasy_assistant.lineup import (FutureGame, LockMove, Slot, apply_moves, best_assignment, can_fill,
                                       final_scores, lock_floor, move_instructions, plan_week, player_values,
-                                      recommend_locks, slot_labels, today_line, today_plan,
+                                      pass_values, recommend_locks, slot_labels, today_line, today_plan,
                                       WeekPlan)
 from fantasy_assistant import locks
 from fantasy_assistant.lockin import GameForecast
@@ -400,3 +401,78 @@ def test_todays_plan_keeps_a_spare_who_is_already_in_the_slot():
     [line] = plan_for_today(slots, {"UTIL2": "kgeorge"}, {"marshall", "pgeorge"},
                             {"kgeorge": 20.7, "pgeorge": 26.0, "marshall": 15.0})
     assert line.startswith("UTIL2  <- marshall (keep) vs NYK\n")
+
+
+# ---------- Playing now: a starter whose game is on ----------
+
+WED_1118, FRI_1120 = date(2026, 11, 18), date(2026, 11, 20)
+LIVE_POSITIONS = {"smith": {"PF", "C"}, "marshall": {"SF", "PF"}}
+
+
+def test_wednesday_11_18_smith_jr_in_2nd_quarter_stays_in_f_no_free_roll_for_marshall():
+    # 7:46pm: Smith Jr. (F) is in the 2nd quarter; his previous game was 15.7.
+    # Marshall is on the bench with a game later tonight. Smith's live game
+    # counts like one still to come: when it ends, F takes its score.
+    hou = {WED_1118: Game("1", WED_1118, "HOU", "NYK"), FRI_1120: Game("2", FRI_1120, "BOS", "HOU")}
+    at_746 = datetime(2026, 11, 18, 19, 46)
+    slate, is_live = games_that_count(hou, "HOU", at_746, {"HOU": "in_game"}, starting=True)
+    assert is_live and sorted(slate) == [WED_1118, FRI_1120]
+    # On the bench his live game wouldn't count, so only Friday's is left.
+    slate, is_live = games_that_count(hou, "HOU", at_746, {"HOU": "in_game"}, starting=False)
+    assert not is_live and sorted(slate) == [FRI_1120]
+
+    slots = [Slot("F", "F", "smith", 15.7), Slot("C", "C", "clingan", 38.6, locked=True)]
+    future = games(smith=[(WED_1118, ROLE), (FRI_1120, ROLE)], marshall=[(WED_1118, ROLE)])
+    values = player_values(future)
+    live = {"smith"}
+
+    # His 15.7 is about to be replaced, so it can't be locked (or held back).
+    moves, held = recommend_locks(slots, values, LIVE_POSITIONS, playing_now=live)
+    assert moves == [] and held == []
+
+    # F waits on Smith, and its value counts tonight's game plus Friday's.
+    plan = plan_week(slots, pass_values(slots, values), LIVE_POSITIONS, live)
+    assert plan.assignment == {"F": "smith"}
+    assert plan.slot_value("F") > player_values(games(smith=[(FRI_1120, ROLE)]))["smith"]
+
+    # Today: Smith stays in F; no free roll for Marshall, no "put Smith back".
+    moves = today_plan(slots, plan, {"marshall"}, values, LIVE_POSITIONS, live)
+    assert [today_line(m, "vs NYK") for m in moves] == ["F      <- smith (keep, playing now) vs NYK"]
+
+
+def test_playing_now_player_can_move_between_slots_but_is_never_benched():
+    # Smith Jr. (PF/C) is playing in PF; C is empty. Marshall (SF/PF) plays
+    # tonight and the plan wants him in PF, so Smith moves to C and keeps his
+    # live game (rule 5) instead of going to the bench (which would clear it).
+    slots = [Slot("PF", "PF", "smith", 15.7), Slot("C", "C", None, 0.0)]
+    values = {"smith": 22.0, "marshall": 25.0}
+    plan = plan_week(slots, values, LIVE_POSITIONS, {"smith"})
+    assert plan.assignment == {"PF": "marshall", "C": "smith"}
+    moves = today_plan(slots, plan, {"marshall"}, values, LIVE_POSITIONS, {"smith"})
+    assert [today_line(m, "vs NYK") for m in moves] == [
+        "PF     <- marshall (from bench) vs NYK; smith moves to C",
+        "C      <- smith (from PF, playing now) vs NYK",
+    ]
+
+
+def test_playing_now_player_must_keep_a_slot_even_when_a_bench_player_is_worth_more():
+    # PF is the only open slot Smith Jr. can play. Marshall's week is worth
+    # more, but Smith can't be benched while his game is on, so PF waits on him.
+    slots = [Slot("PF", "PF", "smith", 15.7)]
+    plan = plan_week(slots, {"smith": 18.0, "marshall": 25.0}, LIVE_POSITIONS, {"smith"})
+    assert plan.assignment == {"PF": "smith"}
+    assert plan.total == 18.0
+
+
+def test_lock_never_benches_a_player_whose_game_is_on():
+    # Marshall (SF/PF) has 30.0 in SF and no games left. Locking him in PF
+    # would free SF for K. George (SF only), but Smith Jr. (PF only) is playing
+    # in PF and can't take SF, so he'd be benched mid-game. Lock him in SF.
+    slots = [Slot("SF", "SF", "marshall", 30.0), Slot("PF", "PF", "smith", 15.7)]
+    positions = {"marshall": {"SF", "PF"}, "smith": {"PF"}, "kgeorge": {"SF"}}
+    values = {"smith": 20.0, "kgeorge": 28.0}
+    moves, _ = recommend_locks(slots, values, positions, playing_now={"smith"})
+    assert [(m.player_id, m.from_label, m.to_label) for m in moves] == [("marshall", "SF", "SF")]
+    # Without the rule, the plan would have benched him for the bigger total.
+    moves, _ = recommend_locks(slots, values, positions)
+    assert [(m.player_id, m.to_label) for m in moves] == [("marshall", "PF")]

@@ -152,6 +152,11 @@ def cmd_week() -> int:
         tipoff = schedule.tipoff_note(to_come, today)
         if tipoff:
             next_txt += f"; {tipoff}"
+        # `week` doesn't know who's starting, so a live game isn't counted in
+        # Left; it only counts for a starter (see advise).
+        if team and today in slate and schedule.playing_now(today, now,
+                                                            (today_statuses or {}).get(team)):
+            next_txt = f"playing now (counts only if he started it); later: {next_txt}"
         label = (status or "") + (" IR" if pid in injured_reserve else "")
         print(f"{_player_name(p)[:22]:<22} {label:<7}{cells}   {left:>4}  {next_txt}")
 
@@ -333,11 +338,20 @@ def cmd_advise() -> int:
     positions = {pid: set(players.get(pid, {}).get("fantasy_positions")
                           or [players.get(pid, {}).get("position") or ""])
                  for pid in roster.get("players") or []}
+    # A starter whose game is on right now ("playing now") can move between
+    # starting slots but not to the bench, and his slot takes this game's score
+    # when it ends, so the game counts like one still to come. A bench player's
+    # live game doesn't count for him, so it's lost (moving him in won't help).
+    starters = {s.player_id for s in slots if not s.locked and s.player_id}
+    live: set[str] = set()
     for pid, prof in profiles.items():
         p = players.get(pid, {})
         team = schedule.nba_team(p.get("team"))
-        slate = (schedule.games_to_come(schedule.team_games(games, team, days), team, now,
-                                        today_statuses) if team else {})
+        slate, is_live = (schedule.games_that_count(schedule.team_games(games, team, days),
+                                                    team, now, today_statuses, pid in starters)
+                          if team else ({}, False))
+        if is_live:
+            live.add(pid)
         chances = play_chances(p.get("injury_status"), len(slate))
         for (day, game), chance in zip(sorted(slate.items()), chances):
             fc = GameForecast(prof.average, prof.swing, chance)
@@ -354,9 +368,9 @@ def cmd_advise() -> int:
         return 0
 
     # 1. Which scores in hand to lock, and in which slot.
-    moves, held = recommend_locks(slots, values, positions, floor)
+    moves, held = recommend_locks(slots, values, positions, floor, live)
     after, steps = apply_moves(slots, moves, positions, short)
-    plays_today = {g.player_id for g in future.get(now.date(), [])}  # games not started yet
+    plays_today = {g.player_id for g in future.get(now.date(), [])} - live  # not started yet
     if moves:
         print("\nRecommended locks (in this order):")
         for move, step in zip(moves, steps):
@@ -375,11 +389,12 @@ def cmd_advise() -> int:
     # 2. The plan for the rest of the week: which player each open slot is waiting on.
     locked_now = {m.player_id for m in moves}
     remaining = {p: v for p, v in values.items() if p not in locked_now}
-    plan = plan_week(after, pass_values(after, remaining), positions)
+    plan = plan_week(after, pass_values(after, remaining), positions, live)
     newly = {m.to_label for m in moves}
     in_hand = {x.player_id for x in slots if not x.locked and x.player_id and x.score > 0}
+    in_hand -= live  # his game is on: the score shown is about to be replaced
 
-    print(f"\n{'Slot':<6} {'Now':<13} {'Score':>6}  {'Status':<6}  {'Waiting on':<13} {'Exp':>5}  "
+    print(f"\n{'Slot':<6} {'Now':<13} {'Score':>6}  {'Status':<7}  {'Waiting on':<13} {'Exp':>5}  "
           f"{'Depth':<5} Alternates")
     rows = []  # the same table, saved to the advice log
     for x in after:
@@ -391,12 +406,13 @@ def cmd_advise() -> int:
             print(f"{x.label:<6} {name:<13} {x.score:6.1f}  {row['status']}")
             continue
         status = ("OPEN" if x.player_id is None else
+                  "PLAYING" if x.player_id in live else
                   "PASS" if x.player_id in in_hand else "WAIT")
         target = plan.assignment.get(x.label)
         row.update(status=status, waiting_on=target,
                    expected=round(plan.slot_value(x.label), 1))
         alts = ", ".join(short(p) for p in alternatives(x, plan, positions)[:3]) or "none"
-        print(f"{x.label:<6} {name:<13} {x.score:6.1f}  {status:<6}  "
+        print(f"{x.label:<6} {name:<13} {x.score:6.1f}  {status:<7}  "
               f"{(short(target) if target else 'nobody'):<13} {plan.slot_value(x.label):5.1f}  "
               f"{depth_label(x, plan, positions):<5} {alts}")
 
@@ -415,7 +431,7 @@ def cmd_advise() -> int:
     if days and days[0] == now.date():
         playing_today = {g.player_id: g for g in future.get(now.date(), [])
                          if g.player_id not in locked_now}
-        today = today_plan(after, plan, set(playing_today), values, positions)
+        today = today_plan(after, plan, set(playing_today), values, positions, live)
         if today:
             print("\nToday's plan for open slots:")
             for m in today:
@@ -424,7 +440,9 @@ def cmd_advise() -> int:
     print(f"\nWaiting on = the player planned for that slot; Exp = what you'd expect to lock"
           f" from him this week.\nEach player can only be locked once, so each slot waits on"
           f" a different player.\nLOCK = lock now (steps above). PASS = keep the slot open. "
-          f"WAIT = his game hasn't happened. OPEN = empty.")
+          f"WAIT = his game hasn't happened. OPEN = empty.\nPLAYING = his game is on now: "
+          f"it replaces the score shown when it ends. He can move\nbetween starting slots "
+          f"but not to the bench (that clears the game).")
 
     # 5. Save this advice so `review` can check it once the games are played.
     def move_dict(m):

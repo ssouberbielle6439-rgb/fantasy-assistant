@@ -127,6 +127,10 @@ def best_assignment(weights: list[list[float]]) -> list[int]:
 
 
 OWN_SLOT_BONUS = 0.01  # on a tie, a player stays in the slot he's already in
+# A player whose game is on can't be benched (that clears the game), so the
+# plan must keep him in a starting slot. This bonus is far bigger than any
+# week value, so the matching seats those players before anyone else.
+MUST_START_BONUS = 1000.0
 
 # Santiago's lock rules for non-stars. 25 is a TARGET: locks below it are fine,
 # just labeled. The FLOOR is the real limit: below it, a lock is held back
@@ -164,15 +168,24 @@ class WeekPlan:
 
 
 def plan_week(slots: list[Slot], values: dict[str, float],
-              positions: dict[str, set[str]]) -> WeekPlan:
+              positions: dict[str, set[str]],
+              playing_now: set[str] = frozenset()) -> WeekPlan:
     """Match available players to open slots (each player at most one slot)
-    to maximize total expected points. Solved exactly with best_assignment."""
+    to maximize total expected points. Solved exactly with best_assignment.
+
+    `playing_now`: starters whose game is on right now. In Sleeper they can
+    still move between starting slots (keeping the game) but can't be
+    benched, so each must get some open slot. A big bonus for every slot he
+    can fill makes the matching seat them all first, then maximize points.
+    There's always room: they're already sitting in different open slots.
+    """
     open_slots = [s for s in slots if not s.locked]
-    pids = [p for p, v in values.items() if v > 0]
+    pids = [p for p, v in values.items() if v > 0 or p in playing_now]
     assignment: dict[str, str | None] = {s.label: None for s in open_slots}
     if not open_slots or not pids:
         return WeekPlan(assignment, values, 0.0)
-    weights = [[(values[p] + (OWN_SLOT_BONUS if p == s.player_id else 0.0))
+    weights = [[(values[p] + (OWN_SLOT_BONUS if p == s.player_id else 0.0)
+                 + (MUST_START_BONUS if p in playing_now else 0.0))
                 if can_fill(s.kind, positions.get(p, set())) else 0.0
                 for p in pids] for s in open_slots]
     total = 0.0
@@ -225,7 +238,8 @@ def pass_values(slots: list[Slot], values: dict[str, float]) -> dict[str, float]
 
 
 def recommend_locks(slots: list[Slot], values: dict[str, float],
-                    positions: dict[str, set[str]], floor: float = LOCK_FLOOR
+                    positions: dict[str, set[str]], floor: float = LOCK_FLOOR,
+                    playing_now: set[str] = frozenset()
                     ) -> tuple[list[LockMove], list[LockMove]]:
     """Which scores in hand to lock, and in which slot.
 
@@ -238,17 +252,23 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
     nobody left to fill it. Above the floor, the math decides. Returns
     (locks, held_back): held_back are locks the math liked but the floor
     blocked, so the user can override if they want.
+
+    `playing_now`: starters whose game is on. Their previous score is about
+    to be replaced, so it can't be locked. They can't be benched either, so a
+    lock only goes into such a player's slot if he can swap into the slot
+    being vacated (the straight swap, rule 5).
     """
     work = [Slot(s.label, s.kind, s.player_id, s.score, s.locked) for s in slots]
     vals = pass_values(work, values)
     in_hand = [(s.player_id, s.label, s.score) for s in work
-               if not s.locked and s.player_id and s.score > 0]
+               if not s.locked and s.player_id and s.score > 0
+               and s.player_id not in playing_now]
     moves: list[LockMove] = []
     held: dict[str, LockMove] = {}
     held_rank: dict[str, tuple] = {}
     kind_of = {s.label: s.kind for s in work}
     while in_hand:
-        base = plan_week(work, vals, positions)
+        base = plan_week(work, vals, positions, playing_now)
         best = None
         for pid, from_label, score in in_hand:
             rest = {p: v for p, v in vals.items() if p != pid}
@@ -258,11 +278,16 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
             for k in work:
                 if k.locked or not can_fill(k.kind, positions.get(pid, set())):
                     continue
+                # A player whose game is on can't be benched to make room.
+                if k.player_id in playing_now and not can_fill(
+                        kind_of[from_label], positions.get(k.player_id, set())):
+                    continue
                 k.locked = True
                 # Round once and compare rounded gains everywhere. Comparing a raw
                 # gain to a rounded one let floating-point noise (0.00000000000003)
                 # break ties, which moved Murray from PG to G for no gain.
-                gain = round(score + plan_week(work, rest, positions).total - base.total, 1)
+                gain = round(score + plan_week(work, rest, positions, playing_now).total
+                             - base.total, 1)
                 k.locked = False
                 move = LockMove(pid, from_label, k.label, score, gain)
                 # A player with no games left keeps his score anyway, so locking
@@ -293,9 +318,11 @@ def recommend_locks(slots: list[Slot], values: dict[str, float],
         if best is None:
             break
         moves.append(best)
-        for k in work:
-            if k.label == best.to_label:
-                k.locked, k.player_id, k.score = True, best.player_id, best.score
+        by_label = {k.label: k for k in work}
+        dst, src = by_label[best.to_label], by_label[best.from_label]
+        if dst.player_id in playing_now and dst is not src:
+            src.player_id, src.score = dst.player_id, dst.score  # swapped, not benched
+        dst.locked, dst.player_id, dst.score = True, best.player_id, best.score
         vals.pop(best.player_id, None)
         held.pop(best.player_id, None)
         in_hand = [h for h in in_hand if h[0] != best.player_id]
@@ -369,10 +396,12 @@ class TodayMove:
     displaced: str | None = None     # who leaves this slot to make room
     displaced_to: str | None = None  # the slot he moves to; None = bench
     cleared: float = 0.0             # the score benching him clears (rule 4)
+    live: bool = False               # his game is on right now
 
 
 def today_plan(slots: list[Slot], plan: WeekPlan, playing_today: set[str],
-               values: dict[str, float], positions: dict[str, set[str]]) -> list[TodayMove]:
+               values: dict[str, float], positions: dict[str, set[str]],
+               playing_now: set[str] = frozenset()) -> list[TodayMove]:
     """Today's starter for each open slot: the planned player if he plays today,
     otherwise a spare who does (a free roll).
 
@@ -381,7 +410,11 @@ def today_plan(slots: list[Slot], plan: WeekPlan, playing_today: set[str],
     slots keeps his score (rule 5), and when that slot is the one the incoming
     player left, it's Sleeper's straight swap. Otherwise he's benched, which
     clears his score (rule 4).
+
+    `playing_now`: starters whose game is on. The plan (plan_week) always
+    seats them, so each is picked for a slot and never pushed out or benched.
     """
+    playing_today = set(playing_today) | set(playing_now)
     open_slots = [s for s in slots if not s.locked]
     planned = {p for p in plan.assignment.values() if p}
     spares = sorted((p for p in playing_today if p not in planned),
@@ -423,7 +456,7 @@ def today_plan(slots: list[Slot], plan: WeekPlan, playing_today: set[str],
         q = s.player_id if s.player_id != p else None
         to = final.get(q) if q else None
         moves.append(TodayMove(s.label, p, plan.assignment.get(s.label), source.get(p), q, to,
-                               score[q] if q and to is None else 0.0))
+                               score[q] if q and to is None else 0.0, p in playing_now))
     return moves
 
 
@@ -431,6 +464,8 @@ def today_line(m: TodayMove, opponent: str, name=str) -> str:
     """One line of advise's "Today's plan for open slots"."""
     where = ("keep" if m.source == m.label else
              "from bench" if m.source is None else f"from {m.source}")
+    if m.live:
+        where += ", playing now"
     line = f"{m.label:<6} <- {name(m.player_id)} ({where}) {opponent}"
     if m.displaced and m.displaced_to:
         line += f"; {name(m.displaced)} moves to {m.displaced_to}"

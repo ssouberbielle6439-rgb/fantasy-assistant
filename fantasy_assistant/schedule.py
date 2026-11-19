@@ -106,6 +106,16 @@ def still_to_come(day: date, now: datetime, status: str | None) -> bool:
     return status == "pre_game"
 
 
+def playing_now(day: date, now: datetime, status: str | None) -> bool:
+    """Whether a game on `day` is being played right now: it's today and
+    Sleeper's schedule says in_game. (With no status we can't tell, so no.)
+
+    In Sleeper a player can't be moved once his game starts, and if he's in a
+    starting slot, that slot takes this game's score when it ends.
+    """
+    return day == now.date() and status == "in_game"
+
+
 def games_to_come(slate: dict[date, Game], team: str, now: datetime,
                   today_statuses: dict[str, str] | None) -> dict[date, Game]:
     """The games in a team's slate that haven't started yet.
@@ -115,6 +125,26 @@ def games_to_come(slate: dict[date, Game], team: str, now: datetime,
     """
     status = (today_statuses or {}).get(team)
     return {d: g for d, g in slate.items() if still_to_come(d, now, status)}
+
+
+def games_that_count(slate: dict[date, Game], team: str, now: datetime,
+                     today_statuses: dict[str, str] | None,
+                     starting: bool) -> tuple[dict[date, Game], bool]:
+    """The games that can still give a player's slot a score this week, and
+    whether he's playing now.
+
+    That's the games still to come, plus today's game if it's on right now
+    and he's `starting` (in an open starting slot): his slot takes its score
+    when it ends. A bench player's live game is lost to him, since a game
+    that started while he sat on the bench doesn't count.
+    """
+    to_come = games_to_come(slate, team, now, today_statuses)
+    today = now.date()
+    live = (starting and today in slate
+            and playing_now(today, now, (today_statuses or {}).get(team)))
+    if live:
+        to_come[today] = slate[today]
+    return dict(sorted(to_come.items())), live
 
 
 def tipoff_note(to_come: dict[date, Game], today: date) -> str:

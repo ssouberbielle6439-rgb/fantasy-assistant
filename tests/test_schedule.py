@@ -92,3 +92,14 @@ def test_postponed_game_today_is_not_still_to_come():
 def test_tipoff_note_only_when_the_next_game_is_today():
     monday_game = Game("x", date(2026, 11, 2), "TOR", "BOS")
     assert tipoff_note({date(2026, 11, 2): monday_game}, SUNDAY) == ""
+
+
+def test_wednesday_11_18_game_in_2nd_quarter_is_playing_now():
+    from fantasy_assistant.schedule import playing_now
+    wed, at_746 = date(2026, 11, 18), datetime(2026, 11, 18, 19, 46)
+    assert playing_now(wed, at_746, "in_game")
+    assert not still_to_come(wed, at_746, "in_game")  # started, so not "to come"
+    assert not playing_now(wed, at_746, "pre_game")
+    assert not playing_now(wed, at_746, "complete")
+    assert not playing_now(wed, at_746, None)  # no status: can't tell
+    assert not playing_now(date(2026, 11, 17), at_746, "in_game")  # not today
