@@ -72,7 +72,9 @@ fantasy_assistant/
   locks.py      # remembers which slots are locked this week, and at what score
   advice_log.py # saves every piece of advice and grades it once the games are played
   state.py      # where locks and the advice log are saved (STATE_DIR), and merging two copies
-  __main__.py   # command-line entry point
+  service.py    # the engine's front door: plain functions that return data (lineup, advice,
+                #   one lock decision, profiles, review); the CLI, web app and AI chat all call these
+  __main__.py   # command-line entry point: reads commands, calls service.py, prints
 tests/          # automated tests, including regression tests from real league situations
 scripts/        # one-off checks against real data, e.g. how the player averages were tuned
 ```
@@ -109,6 +111,7 @@ python -m fantasy_assistant merge data    # merge another folder's locks and adv
 - [x] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
 - [x] Tell whether today's games have tipped off from Sleeper's live schedule, instead of a fixed 7pm cutoff
 - [x] Weight this season's games more as the season goes on, tuned by replaying this season's games (`scripts/backtest_profiles.py`)
+- [x] Split the computing (`service.py`, returns data) from the printing (`__main__.py`), ready for the web app and AI chat
 - [ ] Matchup-aware advice: play for win probability, not just points
 - [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
 - [ ] Read injury news with Gemini to sharpen chance-to-play

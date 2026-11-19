@@ -13,18 +13,24 @@ class NoGameLogs(Exception):
     """Neither Sleeper nor NBA.com had this player's games."""
 
 
+def _print_note(text: str) -> None:
+    print(f"  ({text})")
+
+
 def season_games(sleeper_id: str, name: str, season: str, is_current: bool,
-                 max_age: float | None = None) -> list[dict]:
+                 max_age: float | None = None, note=_print_note) -> list[dict]:
     """A player's games for a season ("2026-27"), most recent first.
 
     `max_age` (seconds) is how old this season's cache may be; if it's not
-    given, each source uses its own default.
+    given, each source uses its own default. `note` is called with a line of
+    text when Sleeper fails and NBA.com is used instead (printed by default;
+    service.py collects it so it can be shown in order).
     """
     age = {} if max_age is None else {"max_age": max_age}
     try:
         return sleeper_stats.game_logs(sleeper_id, season, is_current, **age)
     except sleeper_stats.SleeperStatsUnavailable as err:
-        print(f"  (Sleeper stats failed for {name}: {err}; using NBA.com)")
+        note(f"Sleeper stats failed for {name}: {err}; using NBA.com")
 
     nba_id = nba_stats.find_nba_id(name)
     if nba_id is None:
