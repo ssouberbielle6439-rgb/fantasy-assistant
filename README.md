@@ -55,6 +55,16 @@ An earlier version counted the same player's games toward several slots at once,
 
 Sleeper's API doesn't say which slots are locked, and its per-slot scores can't be trusted for locked slots: one Sunday night the same request returned a different version of the week every minute or so, cycling a locked slot through the player's different games. So the app takes only the lineup (who is in each slot) from Sleeper's matchup and works out every slot's score itself from Sleeper's per-game box scores: an open slot holds the player's latest finished game (0 if he sat it out), and a locked slot holds the game saved with the lock, re-scored every run so stat corrections come through. When its score and Sleeper's differ, it prints both and uses its own; you can still type the right one (`F=27.9`) when locking.
 
+## Asking in plain English
+
+`chat` lets me ask questions like "Smith Jr. scored 26, lock or wait?", "who should I start at G today?" or "how did the app's advice do this week?". Gemini reads the question and decides which of the app's tools to run (function calling): the lineup, the advice, one lock decision, a player's profile, the week grid, or the review. The app runs them on the same engine as the other commands and sends back the results, and Gemini explains them in a sentence or two.
+
+**The math decides; the AI only explains.** The rules tell Gemini to use only numbers from a tool result and to do no arithmetic of its own: a difference or comparison has to be a number a tool gave, such as a lock's gain. A number check backs that up in code: any decimal in an answer that no tool returned and I didn't type is flagged under the answer.
+
+Player names are matched to my roster (case, accents and dots don't matter; "Smith Jr." is Jabari Smith Jr., not Jalen Smith). When a name could be two players, the app asks me which one itself instead of letting the AI guess. The chat never saves advice to the log, so asking questions doesn't change what `review` grades.
+
+It calls Gemini's REST API with `requests` (no SDK, so nothing new to install on ARM64 Windows), loads the team once per session, and turns a missing or rejected key, rate limits and network errors into one-line messages.
+
 ## Project layout
 
 ```
@@ -74,6 +84,8 @@ fantasy_assistant/
   state.py      # where locks and the advice log are saved (STATE_DIR), and merging two copies
   service.py    # the engine's front door: plain functions that return data (lineup, advice,
                 #   one lock decision, profiles, review); the CLI, web app and AI chat all call these
+  gemini.py     # small client for Gemini's REST API (key from .env, clear errors)
+  chat.py       # the AI chat: tools on service.py, name matching, the number check
   __main__.py   # command-line entry point: reads commands, calls service.py, prints
 tests/          # automated tests, including regression tests from real league situations
 scripts/        # one-off checks against real data, e.g. how the player averages were tuned
@@ -94,6 +106,7 @@ python -m fantasy_assistant week      # who plays which day this week
 python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot (saved to a log)
 python -m fantasy_assistant review    # how this week's saved advice turned out
 python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice #3
+python -m fantasy_assistant chat      # ask questions in plain English (needs GEMINI_API_KEY)
 python -m fantasy_assistant merge data    # merge another folder's locks and advice log into STATE_DIR
 ```
 
@@ -113,7 +126,7 @@ python -m fantasy_assistant merge data    # merge another folder's locks and adv
 - [x] Weight this season's games more as the season goes on, tuned by replaying this season's games (`scripts/backtest_profiles.py`)
 - [x] Split the computing (`service.py`, returns data) from the printing (`__main__.py`), ready for the web app and AI chat
 - [ ] Matchup-aware advice: play for win probability, not just points
-- [ ] AI chat: ask questions in plain English (Gemini understands, the math decides)
+- [x] AI chat: ask questions in plain English (Gemini picks the tools and explains, the math decides)
 - [ ] Read injury news with Gemini to sharpen chance-to-play
 - [ ] Store data in DuckDB
 - [ ] Web page (FastAPI) showing lock or pass for every player

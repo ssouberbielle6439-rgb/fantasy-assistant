@@ -5,6 +5,7 @@
     python -m fantasy_assistant week       # who plays which day this week
     python -m fantasy_assistant advise     # LOCK or PASS for every lineup slot (saved to a log)
     python -m fantasy_assistant review     # how the saved advice turned out
+    python -m fantasy_assistant chat       # ask questions in plain English (Gemini)
     python -m fantasy_assistant note 7 PG locked him anyway   # note on saved advice #7
     python -m fantasy_assistant merge data # merge another computer's locks and advice log
 
@@ -232,6 +233,44 @@ def cmd_advise() -> int:
     return 0
 
 
+def cmd_chat() -> int:
+    """Ask about your lineup in plain English. Gemini picks which of the app's
+    tools to run and explains their answers (chat.py); nothing is saved."""
+    from . import chat, gemini
+
+    try:
+        settings = gemini.settings_from_env()   # before loading anything: no key, no chat
+    except gemini.MissingKey as err:
+        sys.exit(str(err))
+    team = _load_team()   # once for the whole chat
+    session = chat.ChatSession(team, settings)
+    # Gemini's answers can hold characters an old Windows console can't show.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="replace")
+    print(f"Ask about your lineup in plain English (Gemini model: {settings.model}).\n"
+          f"Answers come from the app's own numbers, and nothing is saved to the advice log.\n"
+          f"Press Enter on an empty line, or type quit, to stop.")
+    while True:
+        question = _read("\nYou > ").strip()
+        if question.lower() in ("", "quit", "exit", "q"):
+            return 0
+        try:
+            answer = session.ask(question)
+        except gemini.GeminiError as err:
+            print(f"  ({err})")
+            if err.fatal:
+                return 1
+            continue
+        _print_warnings(answer.warnings)
+        print(f"App > {answer.text}")
+        if answer.unmatched:
+            print(f"  (Number check: {', '.join(answer.unmatched)} "
+                  f"{'does' if len(answer.unmatched) == 1 else 'do'} not match any number the "
+                  f"app gave. Treat {'it' if len(answer.unmatched) == 1 else 'them'} with care.)")
+        if answer.tools_used:
+            print(f"  (from: {', '.join(dict.fromkeys(answer.tools_used))})")
+
+
 def cmd_note(args: list[str]) -> int:
     """note                      -> list this week's saved advice
     note 7 PG locked him anyway -> attach a note to run #7 (slot is optional)
@@ -378,7 +417,7 @@ def main() -> int:
     load_dotenv()
     state.use(state.state_dir(os.getenv("STATE_DIR")))  # where locks and the advice log live
     commands = {"roster": cmd_roster, "profiles": cmd_profiles, "week": cmd_week,
-                "advise": cmd_advise}
+                "advise": cmd_advise, "chat": cmd_chat}
     with_args = {"review": cmd_review, "note": cmd_note,  # these take extra words
                  "merge": cmd_merge}
     parser = argparse.ArgumentParser(prog="fantasy_assistant")
