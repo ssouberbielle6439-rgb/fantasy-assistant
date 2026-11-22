@@ -9,11 +9,13 @@ In Sleeper's **Lock-In Mode** for fantasy basketball, only one game per player c
 Real answers from the `chat` command on my league (Sunday, November 22):
 
 ```text
-You > Should I lock anyone tonight?
-App > LOCK Immanuel Quickley in SG (below your 25 target).
-      You also have Jabari Smith Jr. at 16.2 and Kyshawn George at 19.6 held
-      back by today's 20-point floor.
-      (from: get_advice)
+You > Derrick White scored 27. Lock or wait, and what Sleeper steps does that
+      lock take?
+App > LOCK Derrick White in SG.
+      Swap D. White (G) with I. Quickley (SG), then lock D. White in SG (27.0).
+      It adds about 14.0 expected points to the week vs. passing (his
+      remaining games are worth about 11.1 on their own).
+      (from: lock_decision)
 
 You > Which of my players are injured?
 App > Jusuf Nurkić is Out and on IR. Derrick White is GTD. Nic Claxton is GTD.
