@@ -15,8 +15,11 @@ How one question works (ChatSession.ask):
      MAX_TOOL_ROUNDS rounds).
 
 The math decides; the AI only explains. Every verdict and number comes from
-a tool. The system prompt says so, and the number check (unmatched_numbers)
-flags any decimal in an answer that no tool gave and the user didn't type.
+a tool. The system prompt says so, and two checks in code back it up: the
+number check (unmatched_numbers) flags any decimal in an answer that no tool
+gave and the user didn't type, and the label check (ChatSession.missing_labels)
+adds advise's "below your 25 target" or "held back by today's floor" to a lock
+answer that left it out.
 
 Names: tools take player names as the user wrote them, and resolve_player
 matches them to the roster. When a name could be two players ("George"),
@@ -167,8 +170,13 @@ tables or headings unless the manager asks for them.
 them to the roster and asks the manager if a name is unclear. If a tool says a \
 name isn't on the roster, say so.
 7. For a score the manager gives you ("he scored 26"), use lock_decision. For \
-the scores already in the lineup, and for who to start today, use get_advice.
+the scores already in the lineup, and for who to start today, use get_advice. \
+For injuries and who might sit, use get_injuries (Sleeper's injury statuses).
 8. If a tool result has warnings that change the answer, mention them in a few words.
+9. When a lock comes with a label (below the manager's target, or held back by \
+today's floor), put the label with the call, for example "LOCK Jamal Murray in \
+PG (below your 25 target)." When the manager asks what to lock, also mention \
+locks held back by the floor, as his call.
 
 What the app's words mean: LOCK = lock now. PASS = keep the slot open for a \
 better game. HELD = the math would lock it, but it's under today's floor, so \
@@ -215,6 +223,11 @@ TOOLS = [
                     "lock bars: lock a score at least this high with 1, 2 or 3 games left.",
      "parameters": {"type": "object", "properties": {"player": _PLAYER},
                     "required": ["player"]}},
+    {"name": "get_injuries",
+     "description": "Every roster player's injury status from Sleeper (Out, Questionable, "
+                    "Doubtful, ... or none listed), whether he's on IR, his next game this "
+                    "week, and his chance to play that next game. Use for 'who's injured', "
+                    "'is X playing tonight', 'who might sit'."},
     {"name": "get_week_grid",
      "description": "Who on the roster plays which day this fantasy week (Monday to Sunday): "
                     "each player's games, games left, chance to play his next game, whether "
@@ -240,6 +253,7 @@ class Answer:
     unmatched: list[str] = field(default_factory=list)  # decimals the number check couldn't find
     warnings: list[str] = field(default_factory=list)   # data problems not shown before
     asking: bool = False                  # the app is asking which player the user meant
+    labels: list[str] = field(default_factory=list)  # lock labels the answer left out
 
 
 class ChatSession:
@@ -256,13 +270,14 @@ class ChatSession:
         self.known_numbers: set[float] = set()   # numbers from tool results and the user
         self._seen_warnings: set[str] = set()
         self._cache: dict = {}
+        self._labels: list[tuple[str, str, str]] = []   # this question's (player, label line, keyword)
         self.now = self.clock()
 
     def ask(self, question: str) -> Answer:
         """Answer one question. Raises gemini.GeminiError if Gemini fails; the
         question is then forgotten, so the conversation stays valid."""
         start = len(self.history)
-        self.now, self._cache = self.clock(), {}
+        self.now, self._cache, self._labels = self.clock(), {}, []
         self.known_numbers |= numbers_in(question)
         self.history.append({"role": "user", "parts": [{"text": question}]})
         used: list[str] = []
@@ -279,7 +294,7 @@ class ChatSession:
                         raise gemini.BadReply("Gemini sent back an empty answer. "
                                               "Try rewording the question.")
                     return Answer(text, used, unmatched_numbers(text, self.known_numbers),
-                                  warnings)
+                                  warnings, labels=self.missing_labels(text))
                 if round_no == MAX_TOOL_ROUNDS:
                     break
                 question_back = self._run_calls(calls, used, warnings)
@@ -322,6 +337,7 @@ class ChatSession:
         tool = {"get_lineup": self.tool_get_lineup, "get_advice": self.tool_get_advice,
                 "lock_decision": self.tool_lock_decision,
                 "player_profile": self.tool_player_profile,
+                "get_injuries": self.tool_get_injuries,
                 "get_week_grid": self.tool_get_week_grid, "review": self.tool_review}.get(name)
         if tool is None:
             return {"error": f"There's no tool named {name!r}."}
@@ -334,6 +350,27 @@ class ChatSession:
         except Exception as err:   # a data source failed; tell Gemini, and the user
             problem = f"{name} failed: {type(err).__name__}: {err}"
             return {"error": problem, "warnings": [problem]}
+
+    # ----- The label check -----
+
+    def _note_label(self, pid: str, score: float, slot: str, label: str) -> None:
+        """Remember a lock label from this question's tool results, so the
+        answer can be checked for it."""
+        line = f"{self.team.short(pid)}'s {score:.1f} in {slot} is {label}"
+        keyword = "floor" if "floor" in label else "target"
+        if (pid, line, keyword) not in self._labels:
+            self._labels.append((pid, line, keyword))
+
+    def missing_labels(self, text: str) -> list[str]:
+        """The lock labels an answer should have shown and didn't.
+
+        A label counts as shown if the answer says "target" (or "floor" for a
+        held lock). Only players the answer names are checked (mentions), so
+        an answer about someone else doesn't get labels it has nothing to do with.
+        """
+        lower = text.lower()
+        return [line for pid, line, keyword in self._labels
+                if keyword not in lower and mentions(self.team, pid, text)]
 
     # ----- Shared within one question -----
 
@@ -390,19 +427,29 @@ class ChatSession:
                 row.update(waiting_on=name(r.waiting_on), expected=_r(r.expected),
                            depth=r.depth, alternates=[name(p) for p in r.alternates])
             slots.append(row)
+        locks = []
+        for st in advice.locks:
+            m = st.move
+            lock = {"player": name(m.player_id), "slot": m.to_label, "from_slot": m.from_label,
+                    "score": _r(m.score), "gain": _r(m.gain), "sleeper_steps": st.instruction,
+                    "lock_before_tipoff": st.before_tipoff}
+            if st.below_target:   # advise marks it "[below your 25 target]"
+                lock["label"] = service.target_label(advice.target)
+                self._note_label(m.player_id, m.score, m.to_label, lock["label"])
+            locks.append(lock)
+        held = []
+        for h in advice.held:
+            label = service.floor_label(advice.floor)
+            held.append({"player": name(h.player_id), "slot": h.to_label, "score": _r(h.score),
+                         "gain": _r(h.gain), "label": label})
+            self._note_label(h.player_id, h.score, h.to_label, label)
         return {
             "week_done": False,
             "lock_target": _r(advice.target),
             "lock_floor_today": _r(advice.floor),
-            "recommended_locks": [
-                {"player": name(st.move.player_id), "slot": st.move.to_label,
-                 "from_slot": st.move.from_label, "score": _r(st.move.score),
-                 "gain": _r(st.move.gain), "sleeper_steps": st.instruction,
-                 "below_target": st.below_target, "lock_before_tipoff": st.before_tipoff}
-                for st in advice.locks],
+            "recommended_locks": locks,
             "total_gain_of_recommended_locks": _r(advice.total_gain),
-            "held_by_floor": [{"player": name(h.player_id), "slot": h.to_label,
-                               "score": _r(h.score), "gain": _r(h.gain)} for h in advice.held],
+            "held_by_floor": held,
             "slots": slots,
             "weakest_open_slots": [{"slot": label, "expected": _r(exp)}
                                    for label, exp in advice.weakest],
@@ -422,11 +469,14 @@ class ChatSession:
         except (TypeError, ValueError):
             return {"error": f"The score has to be a number, not {score!r}."}
         call = service.lock_decision(self.team, pid, points, self.now)
+        if call.label:
+            self._note_label(pid, call.score, call.slot, call.label)
         return {
             "player": self.team.name(pid),
             "score": _r(call.score),
             "verdict": call.verdict,
             "slot": call.slot,
+            "label": call.label,
             "gain": _r(call.gain),
             "sleeper_steps": call.instruction,
             "his_remaining_games_worth": _r(call.bar),
@@ -464,6 +514,25 @@ class ChatSession:
                                 "when he has this many games left.")
         result["warnings"] = view.warnings
         return result
+
+    def tool_get_injuries(self) -> dict:
+        report = service.injury_report(self.team, self.now)
+        players = []
+        for r in report.rows:
+            row = {"player": r.name, "injury_status": r.status or "none listed",
+                   "on_ir": r.on_ir, "chance_to_play_next_game_pct": round(r.chance * 100),
+                   "next_game": (f"{_day(r.next_game)} {r.opponent}" if r.next_game
+                                 else "no games left this week")}
+            if r.playing_now:
+                row["playing_now"] = True
+            players.append(row)
+        return {"players": players,
+                "statuses_as_of": _when(report.as_of) if report.as_of else "unknown",
+                "about": "Injury statuses are Sleeper's, from its player list, which the app "
+                         "downloads at most once a day (statuses_as_of says when). Chance to "
+                         "play is the app's number for each status, for his next game: Out "
+                         "means out for the next game only.",
+                "warnings": report.warnings}
 
     def tool_get_week_grid(self) -> dict:
         grid = service.week_grid(self.team, self.now)
@@ -549,3 +618,34 @@ def _r(x) -> float | None:
 def _day(d: date) -> str:
     """'Fri 10/30'."""
     return f"{d:%a %m/%d}"
+
+
+def _when(t: datetime) -> str:
+    """'Fri 10/30 8:15am'."""
+    return f"{t:%a %m/%d} {t.hour % 12 or 12}:{t:%M}{'am' if t.hour < 12 else 'pm'}"
+
+
+def mentions(team: service.Team, pid: str, text: str) -> bool:
+    """Whether `text` names this roster player.
+
+    His last name is enough when no one else on the roster has it ("Clingan").
+    When it's shared (Kyshawn and Paul George), it also takes his first name
+    ("Kyshawn George") or his initial right before it ("K. George"), so
+    "Paul George" doesn't count as naming Kyshawn.
+    """
+    words = name_words(re.sub(r"['’]s\b", "", text))   # "George's" -> "George"
+
+    def first_and_last(p: str) -> tuple[str, str]:
+        rec = team.player(p)
+        first = name_words(rec.get("first_name") or "")
+        last = name_words(rec.get("last_name") or team.name(p))
+        return (first[0] if first else ""), (last[0] if last else "")
+
+    first, last = first_and_last(pid)
+    if not last or last not in words:
+        return False
+    shared = sum(first_and_last(p)[1] == last for p in team.player_ids) > 1
+    if not shared:
+        return True
+    return first in words or any(w == first[:1] and nxt == last
+                                 for w, nxt in zip(words, words[1:]))

@@ -14,8 +14,9 @@ import requests
 
 from fantasy_assistant import __main__ as cli
 from fantasy_assistant import advice_log, chat, gemini, service
-from test_service import (CLINGAN, FRIDAY_NOON, MOBLEY, MURRAY, SMITH_JR, FrozenWeek,  # noqa: F401
-                          save_mobley_lock, week)
+from fantasy_assistant.lineup import LockMove
+from test_service import (CLINGAN, FRIDAY_NOON, MOBLEY, MURRAY, PLAYERS, SMITH_JR,  # noqa: F401
+                          FrozenWeek, save_mobley_lock, week)
 
 SETTINGS = gemini.Settings("AIza-test-key-not-real", "gemini-3.5-flash-lite")
 
@@ -202,6 +203,112 @@ def test_made_up_tools_and_arguments_are_errors_not_crashes(friday, gemini_says)
     assert errors[2] == "The score has to be a number, not 'a lot'."
 
 
+# ---------- Injuries ----------
+
+def test_who_is_injured_runs_get_injuries(friday, gemini_says, monkeypatch):
+    # Santiago, 11/22: "Which of my players are injured today?" got "The app
+    # can't answer that", though the app reads Sleeper's statuses.
+    assert "get_injuries" in [t["name"] for t in chat.TOOLS]
+    assert "get_injuries" in chat.system_prompt(FRIDAY_NOON)
+    monkeypatch.setitem(PLAYERS[MURRAY], "injury_status", "Questionable")
+    fake = gemini_says(reply(call("get_injuries")),
+                       text("Jamal Murray is Questionable, 65% to play tonight @PHX."))
+    answer = friday.ask("Which of my players are injured today?")
+    result = last_tool_results(fake.requests[1])["get_injuries"]
+    rows = {r["player"]: r for r in result["players"]}
+    assert rows["Jamal Murray"] == {"player": "Jamal Murray", "injury_status": "Questionable",
+                                    "on_ir": False, "chance_to_play_next_game_pct": 65,
+                                    "next_game": "Fri 10/30 @PHX"}
+    assert rows["Donovan Clingan"]["injury_status"] == "none listed"
+    assert rows["Donovan Clingan"]["chance_to_play_next_game_pct"] == 97
+    assert result["statuses_as_of"] == "Fri 10/30 8:15am"
+    assert answer.unmatched == [] and answer.tools_used == ["get_injuries"]
+
+
+# ---------- Lock labels (target and floor) ----------
+
+def test_should_i_lock_anyone_gets_the_below_target_label_when_the_answer_drops_it(
+        friday, gemini_says):
+    # Santiago, 11/22: "Should I lock anyone tonight?" said lock Brooks at 23.2
+    # without "below your 25 target", which advise shows. Same here with
+    # Clingan's 22.8: the tool result carries the label, and if the answer
+    # leaves it out the app adds it.
+    fake = gemini_says(reply(call("get_advice")), text("Yes: lock Donovan Clingan in C."))
+    answer = friday.ask("Should I lock anyone tonight?")
+    [lock] = last_tool_results(fake.requests[1])["get_advice"]["recommended_locks"]
+    assert (lock["player"], lock["score"], lock["label"]) == (
+        "Donovan Clingan", 22.8, "below your 25 target")
+    assert answer.labels == ["D. Clingan's 22.8 in C is below your 25 target"]
+
+
+def test_an_answer_that_gives_the_label_needs_no_label_check(friday, gemini_says):
+    gemini_says(reply(call("get_advice")),
+                text("LOCK Donovan Clingan in C (below your 25 target)."))
+    assert friday.ask("Should I lock anyone tonight?").labels == []
+
+
+def test_an_answer_about_someone_else_gets_no_lock_label(friday, gemini_says):
+    gemini_says(reply(call("get_advice")), text("Start Jamal Murray at PG tonight @PHX."))
+    assert friday.ask("Who starts at PG today?").labels == []
+
+
+def test_lock_decision_answer_gets_the_label_too(friday, gemini_says):
+    fake = gemini_says(reply(call("lock_decision", player="Clingan", score=22.8)),
+                       text("LOCK Donovan Clingan in C."))
+    answer = friday.ask("Clingan scored 22.8, lock or wait?")
+    assert last_tool_results(fake.requests[1])["lock_decision"]["label"] == "below your 25 target"
+    assert answer.labels == ["D. Clingan's 22.8 in C is below your 25 target"]
+
+
+def test_labels_are_checked_per_question(friday, gemini_says):
+    gemini_says(reply(call("get_advice")), text("Lock Clingan (below your 25 target)."),
+                text("Clingan plays Saturday."))
+    friday.ask("Should I lock anyone?")
+    assert friday.ask("When does Clingan play next?").labels == []   # no lock talk this time
+
+
+def test_held_lock_answer_gets_the_floor_label(friday, gemini_says, monkeypatch):
+    held = LockMove(SMITH_JR, "UTIL", "UTIL", 21.0, 1.5)
+    monkeypatch.setattr(service, "_advise", lambda team, lineup, now, what_if=None:
+                        service.Advice([], held=[held], floor=23.0, values={SMITH_JR: 19.6}))
+    gemini_says(reply(call("lock_decision", player="Smith Jr.", score=21)),
+                text("HELD: Jabari Smith Jr.'s 21.0 is your call."))
+    answer = friday.ask("Smith Jr. scored 21, lock?")
+    assert answer.labels == ["J. Smith Jr.'s 21.0 in UTIL is held back by today's 23-point floor"]
+
+
+def test_the_rules_ask_for_the_label_with_the_call():
+    rules = chat.system_prompt(FRIDAY_NOON)
+    assert "(below your 25 target)" in rules and "held back by the floor" in rules
+
+
+def test_paul_george_in_an_answer_doesnt_trigger_kyshawn_georges_label(gemini_says):
+    # Live run 11/22: K. George's lock was held by the floor, the answer named
+    # only Paul George, and the label check matched "George" to the wrong one.
+    session = chat.ChatSession(TEAM, SETTINGS, clock=lambda: FRIDAY_NOON)
+    kyshawn = chat.resolve_player(TEAM, "Kyshawn George").player_id
+    session._note_label(kyshawn, 19.6, "SF", "held back by today's 20-point floor")
+    assert session.missing_labels("LOCK Paul George in SF (29.5).") == []
+    assert session.missing_labels("Kyshawn George's 19.6 is your call.") == [
+        "K. George's 19.6 in SF is held back by today's 20-point floor"]
+    assert session.missing_labels("K. George's 19.6 is your call.") != []
+    assert session.missing_labels("K. George: held back by the floor.") == []
+
+
+@pytest.mark.parametrize("text, kyshawn, paul, murray", [
+    ("LOCK Paul George in SF.", False, True, False),
+    ("Kyshawn George and Paul George both play.", True, True, False),
+    ("K. George at SF, Murray at PG.", True, False, True),   # Murray: the only Murray
+    ("George plays tonight.", False, False, False),            # which George? neither
+])
+def test_mentions_tells_players_with_the_same_last_name_apart(text, kyshawn, paul, murray):
+    pid = {name: chat.resolve_player(TEAM, name).player_id
+           for name in ("Kyshawn George", "Paul George", "Jamal Murray")}
+    assert (chat.mentions(TEAM, pid["Kyshawn George"], text),
+            chat.mentions(TEAM, pid["Paul George"], text),
+            chat.mentions(TEAM, pid["Jamal Murray"], text)) == (kyshawn, paul, murray)
+
+
 # ---------- Player names ----------
 
 def roster_team(*names):
@@ -382,6 +489,7 @@ def test_chat_prints_the_number_check_and_the_tools_used(week, gemini_says, monk
                 text("LOCK Donovan Clingan in C, 9.9 better than waiting."))
     _, out = run_chat(monkeypatch, capsys, "Clingan 22.8?")
     assert "(Number check: 9.9 does not match any number the app gave." in out
+    assert "(Label check: D. Clingan's 22.8 in C is below your 25 target.)" in out
     assert "(from: lock_decision)" in out
 
 

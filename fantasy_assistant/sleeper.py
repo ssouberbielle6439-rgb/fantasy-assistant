@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
 import requests
@@ -60,6 +61,13 @@ def get_players(sport: str = "nba") -> dict:
     players = _get(f"/players/{sport}")
     cache.write_text(json.dumps(players), encoding="utf-8")
     return players
+
+
+def players_downloaded(sport: str = "nba") -> datetime | None:
+    """When the cached player list was downloaded (it holds the injury
+    statuses, so they're as old as this). None if there's no cache."""
+    cache = DATA_DIR / f"players_{sport}.json"
+    return datetime.fromtimestamp(cache.stat().st_mtime) if cache.exists() else None
 
 
 def find_my_roster(rosters: list[dict], user_id: str) -> dict | None:

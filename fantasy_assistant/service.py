@@ -20,7 +20,7 @@ The main entry points, in the order `advise` uses them:
     save_advice(advice)                       # into the advice log for `review`
 
 Also: lock_decision (one player and score: lock or wait?), player_profile,
-week_grid, saved_advice + review.
+week_grid, injury_report, saved_advice + review.
 """
 
 from __future__ import annotations
@@ -71,6 +71,7 @@ class Team:
     roster: dict
     players: dict        # Sleeper player id -> player record (every NBA player)
     warnings: list[str] = field(default_factory=list)
+    players_as_of: datetime | None = None   # when `players` (with injury statuses) was downloaded
 
     @property
     def scoring(self) -> dict:
@@ -124,7 +125,8 @@ def load_team() -> Team:
     if unknown:
         warnings.append(f"your league has scoring rules this app doesn't handle yet: "
                         f"{', '.join(unknown)}. Fantasy points will be off until they're added.")
-    return Team(user, league, roster, sleeper.get_players("nba"), warnings)
+    players = sleeper.get_players("nba")
+    return Team(user, league, roster, players, warnings, sleeper.players_downloaded("nba"))
 
 
 # ---------- Data helpers (each returns its warnings instead of printing) ----------
@@ -265,6 +267,17 @@ def record_locks(team: Team, lineup: Lineup, newly_locked: list[Slot]) -> list[s
 
 
 # ---------- Advice ----------
+
+def target_label(target: float) -> str:
+    """How advise marks a lock under your target: 'below your 25 target'."""
+    return f"below your {target:.0f} target"
+
+
+def floor_label(floor: float) -> str:
+    """How advise marks a lock held back by the floor:
+    "held back by today's 23-point floor"."""
+    return f"held back by today's {floor:.0f}-point floor"
+
 
 @dataclass
 class LockStep:
@@ -489,6 +502,7 @@ class LockCall:
     target: float
     reason: str                 # one plain sentence with the numbers behind the verdict
     warnings: list[str] = field(default_factory=list)
+    label: str | None = None    # advise's label: LOCK under the target, or HELD by the floor
 
 
 def lock_decision(team: Team, player_id: str, score: float, now: datetime) -> LockCall:
@@ -508,13 +522,13 @@ def lock_decision(team: Team, player_id: str, score: float, now: datetime) -> Lo
     name = team.short(player_id)
     seat = next((s for s in lineup.slots if s.player_id == player_id), None)
 
-    def call(verdict, slot, reason, gain=None, instruction=None, advice=None):
+    def call(verdict, slot, reason, gain=None, instruction=None, advice=None, label=None):
         games = advice.games_left.get(player_id, []) if advice else []
         bar = advice.values.get(player_id, 0.0) if advice else 0.0
         return LockCall(player_id, name, score, verdict, slot, gain, instruction, bar, games,
                         advice.floor if advice else lock_floor(now.date()),
                         advice.target if advice else LOCK_TARGET, reason,
-                        lineup.warnings + (advice.warnings if advice else []))
+                        lineup.warnings + (advice.warnings if advice else []), label)
 
     if seat is None:
         return call("NOT_STARTING", None, f"{name} isn't in a starting slot, so his game "
@@ -532,16 +546,18 @@ def lock_decision(team: Team, player_id: str, score: float, now: datetime) -> Lo
     for step in advice.locks:
         if step.move.player_id == player_id:
             m = step.move
+            label = target_label(advice.target) if step.below_target else None
+            marked = f" ({label})" if label else ""
             return call("LOCK", m.to_label,
-                        f"Lock {name}'s {score:.1f} in {m.to_label}: it adds about {m.gain:.1f} "
-                        f"expected points to the week vs. passing ({bar_text}).",
-                        m.gain, step.instruction, advice)
+                        f"Lock {name}'s {score:.1f} in {m.to_label}{marked}: it adds about "
+                        f"{m.gain:.1f} expected points to the week vs. passing ({bar_text}).",
+                        m.gain, step.instruction, advice, label)
     for m in advice.held:
         if m.player_id == player_id:
             return call("HELD", m.to_label,
                         f"The math would lock {name}'s {score:.1f} in {m.to_label} (+{m.gain:.1f}), "
                         f"but it's under today's {advice.floor:.0f}-point floor ({bar_text}). "
-                        f"Your call.", m.gain, None, advice)
+                        f"Your call.", m.gain, None, advice, floor_label(advice.floor))
     return call("PASS", seat.label,
                 f"Pass on {name}'s {score:.1f}: the lineup expects more by keeping "
                 f"{seat.label} open ({bar_text}).", advice=advice)
@@ -597,6 +613,7 @@ class WeekRow:
     next_chance: float | None    # chance he plays his next game; None: no games left
     tipoff_note: str             # "plays today, lock before tip-off", or ""
     playing_now: bool            # his game is on right now
+    next_game: date | None = None    # his next game that hasn't started; None: none left
 
 
 @dataclass
@@ -635,8 +652,47 @@ def week_grid(team: Team, now: datetime) -> WeekGrid:
         rows.append(WeekRow(pid, team.name(pid), p.get("injury_status"), pid in ir,
                             {d: g.opponent_of(nba_team) for d, g in sorted(slate.items())},
                             len(to_come), chance[0] if chance else None,
-                            schedule.tipoff_note(to_come, today), live))
+                            schedule.tipoff_note(to_come, today), live,
+                            min(to_come) if to_come else None))
     return WeekGrid(days, today, rows, per_day, [problem] if problem else [])
+
+
+# ---------- Injuries ----------
+
+@dataclass
+class InjuryRow:
+    """One roster player's injury status and his chance to play his next game."""
+    player_id: str
+    name: str
+    status: str | None          # Sleeper's injury status (Out, Questionable, ...); None: none listed
+    on_ir: bool
+    chance: float               # chance he plays his next game (status.py), this week or not
+    next_game: date | None      # that game, if it's this week and hasn't started
+    opponent: str | None        # "vs BOS" or "@DEN"
+    playing_now: bool           # his game is on right now
+
+
+@dataclass
+class InjuryReport:
+    rows: list[InjuryRow]
+    as_of: datetime | None      # when Sleeper's player list, which holds the statuses, was downloaded
+    warnings: list[str]
+
+
+def injury_report(team: Team, now: datetime) -> InjuryReport:
+    """Each roster player's Sleeper injury status and chance to play his next game.
+
+    The chance is the same one advise uses for his next game (status.py:
+    'Out' means out for the next game only). The statuses come with Sleeper's
+    player list, which is downloaded at most once a day, so `as_of` says how
+    old they are.
+    """
+    grid = week_grid(team, now)
+    rows = [InjuryRow(r.player_id, r.name, r.injury_status, r.on_ir,
+                      play_chances(r.injury_status, 1)[0], r.next_game,
+                      r.games.get(r.next_game) if r.next_game else None, r.playing_now)
+            for r in grid.rows]
+    return InjuryReport(rows, team.players_as_of, grid.warnings)
 
 
 # ---------- Review ----------

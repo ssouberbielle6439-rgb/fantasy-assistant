@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from fantasy_assistant import advice_log, locks, schedule, service, sleeper, sleeper_stats
+from fantasy_assistant.lineup import LockMove
 from fantasy_assistant.lockin import value_of_waiting
 from test_sleeper_stats import LEAGUE
 
@@ -21,6 +22,7 @@ MURRAY, MOBLEY, SMITH_JR, CLINGAN, ROOKIE = "1747", "2259", "2445", "2728", "999
 MOBLEY_VS_WAS = "1393723776029425664"   # Wed 10/28, 27.9
 MONDAY = date(2026, 10, 26)
 FRIDAY_NOON = datetime(2026, 10, 30, 12, 0)
+PLAYERS_AS_OF = datetime(2026, 10, 30, 8, 15)   # when the player list was "downloaded"
 
 PLAYERS = {
     MURRAY: {"first_name": "Jamal", "last_name": "Murray", "full_name": "Jamal Murray",
@@ -63,6 +65,7 @@ class FrozenWeek:
         monkeypatch.setattr(sleeper, "get_league", lambda league_id: dict(LEAGUE_INFO))
         monkeypatch.setattr(sleeper, "get_rosters", lambda league_id: [dict(ROSTER)])
         monkeypatch.setattr(sleeper, "get_players", lambda sport="nba": PLAYERS)
+        monkeypatch.setattr(sleeper, "players_downloaded", lambda sport="nba": PLAYERS_AS_OF)
         monkeypatch.setattr(sleeper, "get_state", lambda sport="nba": {"week": 2})
         monkeypatch.setattr(sleeper, "get_matchups", lambda league_id, week: [
             {"roster_id": 1, "starters": STARTERS, "starters_points": self.sleeper_points}])
@@ -291,6 +294,30 @@ def test_lock_decision_when_the_week_is_done(week):
     assert call.verdict == "WEEK_DONE"
 
 
+def test_lock_below_the_target_carries_advises_label(week):
+    # advise prints "[below your 25 target]" for Clingan's 22.8; the chat
+    # answer has to say it too (Santiago, 11/22: Brooks at 23.2 didn't).
+    save_mobley_lock()
+    team = service.load_team()
+    low = service.lock_decision(team, CLINGAN, 22.8, FRIDAY_NOON)
+    assert (low.verdict, low.label) == ("LOCK", "below your 25 target")
+    assert low.reason.startswith("Lock D. Clingan's 22.8 in C (below your 25 target): it adds")
+    high = service.lock_decision(team, CLINGAN, 26.0, FRIDAY_NOON)
+    assert (high.verdict, high.label) == ("LOCK", None)
+    assert "target" not in high.reason
+
+
+def test_lock_held_by_the_floor_carries_the_floor_label(week, monkeypatch):
+    # This small roster never gets a HELD (the floor only holds a lock back
+    # when someone else can fill the slot), so advise's result is stubbed.
+    held = LockMove(SMITH_JR, "UTIL", "UTIL", 21.0, 1.5)
+    monkeypatch.setattr(service, "_advise", lambda team, lineup, now, what_if=None:
+                        service.Advice([], held=[held], floor=23.0, values={SMITH_JR: 19.6}))
+    call = service.lock_decision(service.load_team(), SMITH_JR, 21.0, FRIDAY_NOON)
+    assert (call.verdict, call.slot, call.label) == (
+        "HELD", "UTIL", "held back by today's 23-point floor")
+
+
 # ---------- Profiles and the week grid ----------
 
 def test_player_profile_has_lock_bars_for_1_2_3_games_left(week):
@@ -314,6 +341,31 @@ def test_week_grid_friday_noon(week):
         2, "plays today, lock before tip-off", False)
     assert grid.playing_per_day[date(2026, 10, 30)] == 3   # Murray, Smith Jr., the rookie
     assert grid.warnings == []
+    assert smith.next_game == date(2026, 10, 30)   # tonight's game hasn't tipped off
+
+
+# ---------- Injuries ----------
+
+def test_injury_report_gives_each_players_status_and_chance_to_play_his_next_game(
+        week, monkeypatch):
+    monkeypatch.setitem(PLAYERS[MURRAY], "injury_status", "Questionable")
+    monkeypatch.setitem(PLAYERS[CLINGAN], "injury_status", "Out")
+    report = service.injury_report(service.load_team(), FRIDAY_NOON)
+    rows = {r.player_id: (r.status, r.chance, r.next_game, r.opponent) for r in report.rows}
+    assert rows[MURRAY] == ("Questionable", 0.65, date(2026, 10, 30), "@PHX")
+    assert rows[CLINGAN] == ("Out", 0.0, date(2026, 10, 31), "@UTA")   # out for Saturday only
+    assert rows[SMITH_JR] == (None, 0.97, date(2026, 10, 30), "@DAL")  # none listed
+    assert report.as_of == PLAYERS_AS_OF and report.warnings == []
+
+
+def test_injury_report_after_his_last_game_still_gives_the_status_chance(week, monkeypatch):
+    # Sunday: nobody here plays again this week, but the status still says
+    # how likely he is to play his next game, whenever it is.
+    monkeypatch.setitem(PLAYERS[MURRAY], "injury_status", "Doubtful")
+    week.at(datetime(2026, 11, 1, 12, 0))
+    report = service.injury_report(service.load_team(), week.now)
+    murray = next(r for r in report.rows if r.player_id == MURRAY)
+    assert (murray.next_game, murray.opponent, murray.chance) == (None, None, 0.15)
 
 
 # ---------- Review ----------

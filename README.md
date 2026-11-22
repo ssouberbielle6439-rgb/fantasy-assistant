@@ -57,9 +57,9 @@ Sleeper's API doesn't say which slots are locked, and its per-slot scores can't 
 
 ## Asking in plain English
 
-`chat` lets me ask questions like "Smith Jr. scored 26, lock or wait?", "who should I start at G today?" or "how did the app's advice do this week?". Gemini reads the question and decides which of the app's tools to run (function calling): the lineup, the advice, one lock decision, a player's profile, the week grid, or the review. The app runs them on the same engine as the other commands and sends back the results, and Gemini explains them in a sentence or two.
+`chat` lets me ask questions like "Smith Jr. scored 26, lock or wait?", "who should I start at G today?" or "how did the app's advice do this week?". Gemini reads the question and decides which of the app's tools to run (function calling): the lineup, the advice, one lock decision, a player's profile, injury statuses with each player's chance to play his next game, the week grid, or the review. The app runs them on the same engine as the other commands and sends back the results, and Gemini explains them in a sentence or two.
 
-**The math decides; the AI only explains.** The rules tell Gemini to use only numbers from a tool result and to do no arithmetic of its own: a difference or comparison has to be a number a tool gave, such as a lock's gain. A number check backs that up in code: any decimal in an answer that no tool returned and I didn't type is flagged under the answer.
+**The math decides; the AI only explains.** The rules tell Gemini to use only numbers from a tool result and to do no arithmetic of its own: a difference or comparison has to be a number a tool gave, such as a lock's gain. Two checks back that up in code. The number check flags any decimal in an answer that no tool returned and I didn't type. The label check makes sure a lock answer keeps the label `advise` would print ("below your 25 target", "held back by today's 23-point floor"): if the answer names the player but drops the label, the app adds it underneath.
 
 Player names are matched to my roster (case, accents and dots don't matter; "Smith Jr." is Jabari Smith Jr., not Jalen Smith). When a name could be two players, the app asks me which one itself instead of letting the AI guess. The chat never saves advice to the log, so asking questions doesn't change what `review` grades.
 

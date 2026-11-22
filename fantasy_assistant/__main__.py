@@ -184,14 +184,15 @@ def cmd_advise() -> int:
     if advice.locks:
         print("\nRecommended locks (in this order):")
         for step in advice.locks:
-            below = f"  [below your {advice.target:.0f} target]" if step.below_target else ""
+            below = f"  [{service.target_label(advice.target)}]" if step.below_target else ""
             soon = f"  [{schedule.LOCK_BEFORE_TIPOFF}]" if step.before_tipoff else ""
             print(f"  - {step.instruction}{below}{soon}")
         print(f"  These add about {advice.total_gain:.1f} expected points to your week vs. passing.")
     else:
         print("\nNo locks recommended right now: every score in hand is worth passing on.")
     for h in advice.held:
-        print(f"  (Held back by today's {advice.floor:.0f}-point floor: locking {short(h.player_id)}'s "
+        held = service.floor_label(advice.floor)
+        print(f"  ({held[0].upper() + held[1:]}: locking {short(h.player_id)}'s "
               f"{h.score:.1f} in {h.to_label} would add about {h.gain:.1f}. Your call.)")
 
     # 2. The plan for the rest of the week: which player each open slot is waiting on.
@@ -267,6 +268,8 @@ def cmd_chat() -> int:
             print(f"  (Number check: {', '.join(answer.unmatched)} "
                   f"{'does' if len(answer.unmatched) == 1 else 'do'} not match any number the "
                   f"app gave. Treat {'it' if len(answer.unmatched) == 1 else 'them'} with care.)")
+        for line in answer.labels:   # advise's label, which the answer left out
+            print(f"  (Label check: {line}.)")
         if answer.tools_used:
             print(f"  (from: {', '.join(dict.fromkeys(answer.tools_used))})")
 
