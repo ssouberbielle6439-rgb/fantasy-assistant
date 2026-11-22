@@ -1,139 +1,87 @@
 # fantasy-assistant
 
-A fantasy basketball assistant built around Sleeper's **Lock-In Mode**, where only one game per player counts each week.
+In Sleeper's **Lock-In Mode** for fantasy basketball, only one game per player counts each week. After each game you choose: **lock** the score, or **pass** and let his next game replace it, with no going back. This app treats that as an *optimal stopping* problem. It reads my real league from Sleeper, forecasts every player's remaining games, and tells me what to lock, which slot to lock it in, and why. A Gemini chat lets me ask about it in plain English, and every number in its answers comes from the app.
 
-After each game you have to decide: **lock** this score, or **pass** and hope a later game is better? Passing is permanent, so this is a classic *optimal stopping* problem. This project solves it with math instead of gut feel, using my real league's settings and scoring.
+**Built with:** Python, Sleeper API, Gemini function calling, pytest (242 tests)
 
-> Status: early development. The `advise` command gives LOCK / PASS for every lineup slot using the whole roster, this week's schedule, and injury statuses.
+## Example
 
-## How the lock-in math works
+Real answers from the `chat` command on my league (Sunday, November 22):
 
-Work backward from the player's last game of the week:
+```text
+You > Should I lock anyone tonight?
+App > LOCK Immanuel Quickley in SG (below your 25 target).
+      You also have Jabari Smith Jr. at 16.2 and Kyshawn George at 19.6 held
+      back by today's 20-point floor.
+      (from: get_advice)
 
-1. **Last game:** you take whatever he scores, so its value is just what you expect him to score (counting the chance he sits).
-2. **Earlier games:** lock only if the score beats the *value of waiting*, meaning what you'd expect to end up with by passing and following this same rule on the games that are left.
+You > Which of my players are injured?
+App > Jusuf Nurkić is Out and on IR. Derrick White is GTD. Nic Claxton is GTD.
+      Jalen Smith is GTD. Evan Mobley is Out and on IR. Jalen Duren is Out and on IR.
+      (from: get_injuries)
 
-Example: a player averaging 40 fantasy points, with typical swings of about 10 and a 95% chance to play each game.
-
-| Games left after this one | Lock if he scored at least |
-|---|---|
-| 1 | 38.0 |
-| 2 | 42.8 |
-| 3 | 45.4 |
-
-The bar rises when more games are left, because more chances to beat a score means you can afford to be pickier.
-
-## How the lineup advice works
-
-In my league, each of the 9 starting slots ends the week with one game. After a game you can lock it, or bench the player and give the slot to someone else on the roster. So the real question for a slot isn't "will this player do better later?" but "will anyone who can fill this slot do better later?"
-
-The app answers two questions: **whether** to lock a score, and **where**. A player who qualifies for several slots (say PG/SG) should be locked into the slot where he's least needed later, so flexible slots like UTIL stay open for late big games.
-
-The key modeling point: **each player can only be locked once per week**, so each open slot is really waiting on one player.
-
-1. **Value each player's week.** For every available player, the lock-in math gives the score we'd expect to end up locking from his remaining games (more games and a higher ceiling mean more value).
-2. **Match players to slots.** Pair players with open slots, one player per slot and respecting positions, to maximize the team's expected total. That's the classic *assignment problem*, solved exactly with the Hungarian algorithm (tested against brute force).
-3. **Choose locks for the whole lineup.** For every player with a score in hand, try locking him into each slot he's eligible for and compare the team's total (his score plus the best matching of everyone else) against passing. Take the best lock and repeat. A player with no games left gets locked in his best slot for free, since passing can't gain anything.
-4. **Respect the manager's rule of thumb.** 25 points is a *target* (`LOCK_TARGET_POINTS`): a lock below it is still recommended if the math likes it, just labeled "below your 25 target". The hard limit is a *floor* of 23, dropping to 20 on Sunday when the week is nearly over. Scores under the floor are only locked when nobody else can fill the slot; otherwise the app shows the lock it would have made and leaves the call to you.
-5. **Explain the moves in Sleeper terms.** A straight swap only works if the other player is eligible for the slot being vacated, and benching a player clears his last game, so the instructions follow those rules. A starter whose game is on right now can still move between slots but can't be benched, so the plan always keeps him in one and waits on that game.
-
-It also suggests **free rolls**: if a slot's planned player doesn't play today, drop in a spare who does. If he goes off, lock him; if not, nothing is lost.
-
-## Checking the advice
-
-Every `advise` run is saved to `advice_log.json`, and `review` grades it once the games are played. The log and the weekly lock files live in `data/` by default; set `STATE_DIR` in `.env` to keep them somewhere else, such as a private git repo so they sync between computers (`merge <folder>` combines two computers' copies, keeping every run and note in time order).
-
-- **LOCK** is graded on the player's *next* game, because passing would have meant that game replaced the score. Right if it was lower, or he sat.
-- **PASS** is graded on the same next game, the other way round: right if it beat the score passed on, wrong if it was lower or he sat. How the slot finished is shown too, but only as information.
-- **HELD** (a lock the floor blocked) is graded like a PASS, which shows whether the floor pays off.
-
-Grading both on the next game makes LOCK and PASS mirror images, so exactly one of them is right for any game. An earlier version graded PASS on how the slot finished, but that mixes in everything that happened afterwards (other players moving in, later locks), so it didn't say whether the call itself was right.
-
-If I lock a score the app said to pass on, its call is still graded on the next game and marked as my override, and `review` keeps score: "Your overrides: X of Y beat the app." `note` lets me record why I went the other way. A forecast check also compares each slot's expected value with what it really ended at.
-
-An earlier version counted the same player's games toward several slots at once, which made closing a slot look cheap and led to recommending a 15-point lock. Real-league feedback caught it, and a test now guards against it.
-
-Sleeper's API doesn't say which slots are locked, and its per-slot scores can't be trusted for locked slots: one Sunday night the same request returned a different version of the week every minute or so, cycling a locked slot through the player's different games. So the app takes only the lineup (who is in each slot) from Sleeper's matchup and works out every slot's score itself from Sleeper's per-game box scores: an open slot holds the player's latest finished game (0 if he sat it out), and a locked slot holds the game saved with the lock, re-scored every run so stat corrections come through. When its score and Sleeper's differ, it prints both and uses its own; you can still type the right one (`F=27.9`) when locking.
-
-## Asking in plain English
-
-`chat` lets me ask questions like "Smith Jr. scored 26, lock or wait?", "who should I start at G today?" or "how did the app's advice do this week?". Gemini reads the question and decides which of the app's tools to run (function calling): the lineup, the advice, one lock decision, a player's profile, injury statuses with each player's chance to play his next game, the week grid, or the review. The app runs them on the same engine as the other commands and sends back the results, and Gemini explains them in a sentence or two.
-
-**The math decides; the AI only explains.** The rules tell Gemini to use only numbers from a tool result and to do no arithmetic of its own: a difference or comparison has to be a number a tool gave, such as a lock's gain. Two checks back that up in code. The number check flags any decimal in an answer that no tool returned and I didn't type. The label check makes sure a lock answer keeps the label `advise` would print ("below your 25 target", "held back by today's 23-point floor"): if the answer names the player but drops the label, the app adds it underneath.
-
-Player names are matched to my roster (case, accents and dots don't matter; "Smith Jr." is Jabari Smith Jr., not Jalen Smith). When a name could be two players, the app asks me which one itself instead of letting the AI guess. The chat never saves advice to the log, so asking questions doesn't change what `review` grades.
-
-It calls Gemini's REST API with `requests` (no SDK, so nothing new to install on ARM64 Windows), loads the team once per session, and turns a missing or rejected key, rate limits and network errors into one-line messages.
-
-## Project layout
-
-```
-fantasy_assistant/
-  sleeper.py    # talks to Sleeper's free API (league, rosters, players)
-  scoring.py    # turns a box score into fantasy points using MY league's scoring
-  lockin.py     # the lock-or-pass engine
-  sleeper_stats.py  # game logs from Sleeper's per-game stats, the main source (cached in data/)
-  nba_stats.py  # game logs from NBA.com, the fallback (cached in data/)
-  gamelogs.py   # tries Sleeper first, NBA.com if Sleeper fails
-  profile.py    # turns game logs into each player's average, swing, and chance to play
-  schedule.py   # the NBA season schedule (who plays which day)
-  status.py     # chance to play from Sleeper injury status (Out = next game only)
-  lineup.py     # lineup slots, who can fill them, and each slot's lock bar
-  locks.py      # remembers which slots are locked this week, and at what score
-  advice_log.py # saves every piece of advice and grades it once the games are played
-  state.py      # where locks and the advice log are saved (STATE_DIR), and merging two copies
-  service.py    # the engine's front door: plain functions that return data (lineup, advice,
-                #   one lock decision, profiles, review); the CLI, web app and AI chat all call these
-  gemini.py     # small client for Gemini's REST API (key from .env, clear errors)
-  chat.py       # the AI chat: tools on service.py, name matching, the number check
-  __main__.py   # command-line entry point: reads commands, calls service.py, prints
-tests/          # automated tests, including regression tests from real league situations
-scripts/        # one-off checks against real data, e.g. how the player averages were tuned
+You > How did the app's advice do this week?
+App > The app is 73 percent right across 15 graded calls, with 11 right and
+      4 wrong. Lock calls are 100 percent right, Pass calls are 69 percent
+      right, and Held calls are 100 percent right.
+      (from: review)
 ```
 
-## Setup (Windows, PowerShell)
+## How it works
+
+```text
+Sleeper API: league, scoring rules, lineup, box scores, live game status
+     |
+     v
+service.py, the engine
+  - each player: optimal stopping by backward induction gives the score
+    I'd expect to end up locking from his games left this week
+  - whole lineup: Hungarian algorithm matches players to open slots,
+    which decides whether to lock a score and in which slot
+     |
+     +--> CLI: advise, review, week, profiles, ...
+     +--> Gemini chat: picks the app's tools by function calling
+```
+
+- **The math decides, the AI explains.** Gemini can only choose which tools to run and put their results into words. It is told to use no number a tool didn't return and to do no arithmetic.
+- **A number check backs that up in code.** Any decimal in an answer that no tool returned gets flagged under the answer. A label check does the same for the "below your target" and "floor" warnings.
+- **Each slot's score is computed from box scores**, because Sleeper's API showed the wrong game for locked slots. Sleeper supplies only who is in each slot.
+
+## How it's tested
+
+- **242 automated tests** (pytest, about 2 seconds). Every bug found in my real league gets a regression test named after the situation, such as `test_wednesday_11_18_smith_jr_in_2nd_quarter_stays_in_f_no_free_roll_for_marshall`.
+- **Profile backtest over 1,825 games.** `scripts/backtest_profiles.py` replays this season for all 179 rostered players, forecasting each game from only the games before it. The weighting it picked cut forecast bias from +0.58 to +0.23 points per game.
+- **Record and replay for the refactor.** Before moving the engine into `service.py`, I recorded every API response during real runs with games live, then replayed them through the old and new code. Output and saved files matched for 6 commands and 15 edge cases.
+- **Live checks against Sleeper.** Our scoring matches Sleeper's to the decimal (104 of 108 starter slots league-wide in week 2, and the other 4 were correct zeros for players who sat out). I polled 15 live games every 2 minutes to learn how game status and stats change, which is how the app knows when a score is final.
+- **Every piece of advice is logged and graded** against the game that followed (`review`), including the calls I overrode.
+
+## Vision and roadmap
+
+- **Win probability:** simulate both teams' weeks and play to win the matchup, not just to score points. Lock safer when ahead, chase upside when behind.
+- **Injury news:** have Gemini read the official NBA injury report and news to sharpen each player's chance to play, with a source link for every claim.
+- **Web app:** a FastAPI site with a Lineup tab and a Chat tab, plus a demo mode with a frozen sample week so anyone can click through without a Sleeper account.
+
+Done so far: league and scoring from Sleeper, the lock-in engine, whole-lineup advice, the advice log and grading, box-score slot scores, live tip-off detection, the tuned player averages, and the AI chat.
+
+## Setup and commands
+
+Windows, PowerShell, Python 3.13:
 
 ```powershell
-cd $HOME\code\projects\fantasy-assistant
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-copy .env.example .env      # then open .env and fill in your values
-python -m pytest            # run the tests
-python -m fantasy_assistant roster    # print your league and roster
-python -m fantasy_assistant profiles  # each player's numbers and lock-in bars
-python -m fantasy_assistant week      # who plays which day this week
-python -m fantasy_assistant advise    # LOCK or PASS for every lineup slot (saved to a log)
-python -m fantasy_assistant review    # how this week's saved advice turned out
-python -m fantasy_assistant note 3 PG locked him anyway   # note on saved advice #3
-python -m fantasy_assistant chat      # ask questions in plain English (needs GEMINI_API_KEY)
-python -m fantasy_assistant merge data    # merge another folder's locks and advice log into STATE_DIR
+copy .env.example .env       # add your Sleeper username, league ID and Gemini key
+python -m pytest
 ```
 
-## Roadmap
+| Command | What it does |
+|---|---|
+| `python -m fantasy_assistant advise` | LOCK or PASS for every slot, saved to the advice log |
+| `python -m fantasy_assistant chat` | Ask questions in plain English |
+| `python -m fantasy_assistant review` | Grade this week's saved advice |
+| `python -m fantasy_assistant week` | Who plays which day |
+| `python -m fantasy_assistant profiles` | Each player's average, swing and chance to play |
+| `python -m fantasy_assistant roster` | League and roster |
 
-- [x] Connect to a Sleeper league and read its scoring
-- [x] Score any stat line with the league's own settings
-- [x] Lock-in thresholds via backward induction
-- [x] Pull real game logs and estimate each player's average, swing, and chance to play
-- [x] Know each player's remaining games this week (NBA schedule)
-- [x] Chance to play from Sleeper injury status, game by game
-- [x] Lock or pass for each lineup slot, using the whole roster and saved locks
-- [x] Advice log: save every recommendation and grade it against what happened
-- [x] Game logs from Sleeper's own box scores (they include technical fouls, which NBA.com's don't), with NBA.com as the fallback
-- [x] Work out every slot's score from those box scores instead of trusting Sleeper's matchup numbers
-- [x] Tell whether today's games have tipped off from Sleeper's live schedule, instead of a fixed 7pm cutoff
-- [x] Weight this season's games more as the season goes on, tuned by replaying this season's games (`scripts/backtest_profiles.py`)
-- [x] Split the computing (`service.py`, returns data) from the printing (`__main__.py`), ready for the web app and AI chat
-- [ ] Matchup-aware advice: play for win probability, not just points
-- [x] AI chat: ask questions in plain English (Gemini picks the tools and explains, the math decides)
-- [ ] Read injury news with Gemini to sharpen chance-to-play
-- [ ] Store data in DuckDB
-- [ ] Web page (FastAPI) showing lock or pass for every player
-- [ ] Backtest on last season: does the engine beat gut feel?
-
-## Data and credits
-
-- League data: [Sleeper API](https://docs.sleeper.com/) (free, read-only)
-- Game logs: Sleeper's per-game stats (unofficial), with NBA.com via [nba_api](https://github.com/swar/nba_api) as the fallback
-- License: MIT
+Data: [Sleeper API](https://docs.sleeper.com/), with NBA.com via [nba_api](https://github.com/swar/nba_api) as the fallback. License: MIT.
