@@ -41,10 +41,12 @@ def merge_folder(source: Path, target: Path) -> list[str]:
     `target`. Nothing in `source` is changed. Returns what happened, in words.
 
     The advice log keeps every run and every note, in time order (see
-    advice_log.merge). Lock files are merged slot by slot (see locks.merge).
+    advice_log.merge). Lock files (yours and your opponent's) are merged slot by
+    slot (see locks.merge).
     """
     report = []
-    for lock_file in sorted(source.glob("locks_*.json")):
+    # Your lock files and your opponent's ("opp_locks_*" doesn't match "locks_*").
+    for lock_file in sorted(f for prefix in locks.PREFIXES for f in source.glob(f"{prefix}_*.json")):
         theirs = json.loads(lock_file.read_text(encoding="utf-8"))
         mine_file = target / lock_file.name
         mine = json.loads(mine_file.read_text(encoding="utf-8")) if mine_file.exists() else {}

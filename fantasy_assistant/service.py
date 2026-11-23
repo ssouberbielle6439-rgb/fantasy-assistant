@@ -19,6 +19,12 @@ The main entry points, in the order `advise` uses them:
     advice = advise(team, lineup, now)        # locks, the week's plan, today's moves
     save_advice(advice)                       # into the advice log for `review`
 
+Your odds this week, after advise:
+
+    opponent, problem = load_opponent(team, lineup.week_no, now)  # their team and lineup
+    record_locks(opponent.team, opponent.lineup, newly_locked)    # their locks, as you typed them
+    odds = win_probability(team, lineup, advice, opponent, now)   # simulated (winprob.py)
+
 Also: lock_decision (one player and score: lock or wait?), player_profile,
 week_grid, injury_report, saved_advice + review.
 """
@@ -29,7 +35,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
-from . import advice_log, gamelogs, locks, schedule, sleeper, sleeper_stats, slot_scores
+from . import advice_log, gamelogs, locks, schedule, sleeper, sleeper_stats, slot_scores, winprob
 from .advice_log import Call, SlotOutcome
 from .lineup import (LOCK_TARGET, FutureGame, LockMove, Slot, TodayMove, WeekPlan, alternatives,
                      apply_moves, depth_label, final_scores, lock_floor, pass_values, plan_week,
@@ -93,6 +99,12 @@ class Team:
         return {pid: set(self.player(pid).get("fantasy_positions")
                          or [self.player(pid).get("position") or ""])
                 for pid in self.player_ids}
+
+    @property
+    def team_name(self) -> str:
+        """The team's name in the league, or the owner's Sleeper name."""
+        return ((self.user.get("metadata") or {}).get("team_name")
+                or self.user.get("display_name") or f"Team {self.roster.get('roster_id', '?')}")
 
     def player(self, pid: str | None) -> dict:
         return self.players.get(pid, {}) if pid else {}
@@ -221,19 +233,23 @@ class Lineup:
     games: dict[str, list[WeekGame] | None]  # each player's games this week so far
     notes: list[str]                   # where our scores and Sleeper's disagree, and why
     warnings: list[str]                # data that couldn't be read
+    lock_file: str = locks.MINE        # whose lock file: yours, or locks.OPPONENT
 
 
-def current_lineup(team: Team, now: datetime) -> Lineup:
+def current_lineup(team: Team, now: datetime, lock_file: str = locks.MINE) -> Lineup:
     """Your lineup this week with every slot scored from box scores.
 
     Sleeper's matchup gives who's in each slot; the scores come from Sleeper's
     box scores (slot_scores.py). Saved locks re-score their saved game, so stat
     corrections come through.
+
+    Works for any team in the league: your opponent's lineup is scored the
+    same way, with their locks from `lock_file` (locks.OPPONENT).
     """
     week_no = sleeper.get_state("nba")["week"]
     slots = sleeper_slots(team, week_no)
     days = schedule.fantasy_week(now.date())
-    saved = locks.load(days[0])
+    saved = locks.load(days[0], lock_file)
     sleeper_points = {s.label: s.score for s in slots}
     games, warnings = games_this_week(
         team, [s.player_id for s in slots] + [lk["player_id"] for lk in saved.values()], days)
@@ -241,7 +257,7 @@ def current_lineup(team: Team, now: datetime) -> Lineup:
     notes += locks.disagreements(slots, saved, team.short)
     slot_scores.score_open_slots(slots, games)
     notes += slot_scores.cross_check(slots, sleeper_points, games, saved, team.short)
-    return Lineup(week_no, days, slots, saved, sleeper_points, games, notes, warnings)
+    return Lineup(week_no, days, slots, saved, sleeper_points, games, notes, warnings, lock_file)
 
 
 def keep_saved_locks(lineup: Lineup) -> None:
@@ -262,7 +278,7 @@ def record_locks(team: Team, lineup: Lineup, newly_locked: list[Slot]) -> list[s
                                            lineup.sleeper_points[s.label], team.short)
         if note:
             notes.append(note)
-    locks.save(lineup.days[0], locks.from_slots(lineup.slots))
+    locks.save(lineup.days[0], locks.from_slots(lineup.slots), lineup.lock_file)
     return notes
 
 
@@ -333,6 +349,7 @@ class Advice:
     values: dict[str, float] = field(default_factory=dict)  # player -> week value
     games_left: dict[str, list[FutureGame]] = field(default_factory=dict)  # player -> games
     log_entry: dict = field(default_factory=dict)  # what save_advice writes to the log
+    playing_now: set[str] = field(default_factory=set)  # starters whose game is on right now
 
     @property
     def total_gain(self) -> float:
@@ -406,7 +423,7 @@ def _advise(team: Team, lineup: Lineup, now: datetime,
     done = final_scores(slots, values, team.short)
     if done:
         return Advice(warnings, final_scores=done, floor=floor, target=lock_target,
-                      values=values, games_left=games_left)
+                      values=values, games_left=games_left, playing_now=live)
 
     # 1. Which scores in hand to lock, and in which slot.
     moves, held = recommend_locks(slots, values, positions, floor, live)
@@ -470,12 +487,22 @@ def _advise(team: Team, lineup: Lineup, now: datetime,
         "names": {pid: team.short(pid) for pid in team.player_ids},
     }
     return Advice(warnings, None, lock_steps, held, floor, lock_target, rows, weakest, today,
-                  plan, values, games_left, log_entry)
+                  plan, values, games_left, log_entry, live)
 
 
-def save_advice(advice: Advice) -> int:
-    """Add the advice to the advice log (for `review` and `note`). Returns its run number."""
-    return advice_log.append(advice.log_entry)
+def save_advice(advice: Advice, odds: WinOdds | None = None) -> int:
+    """Add the advice to the advice log (for `review` and `note`), with the win
+    probability when there is one (review doesn't grade it; it's saved so we
+    can later check whether 60% weeks are won about 60% of the time).
+    Returns its run number."""
+    entry = dict(advice.log_entry)
+    if odds is not None and odds.percent is not None:
+        entry["win_probability"] = {
+            "percent": odds.percent, "opponent": odds.opponent, "policy": odds.policy,
+            "my_expected": round(odds.my_expected, 1),
+            "their_expected": round(odds.their_expected, 1),
+            "sims": odds.sims, "seed": odds.seed}
+    return advice_log.append(entry)
 
 
 # ---------- One lock decision ----------
@@ -561,6 +588,221 @@ def lock_decision(team: Team, player_id: str, score: float, now: datetime) -> Lo
     return call("PASS", seat.label,
                 f"Pass on {name}'s {score:.1f}: the lineup expects more by keeping "
                 f"{seat.label} open ({bar_text}).", advice=advice)
+
+
+# ---------- Win probability ----------
+
+SMART, PASSIVE = "smart", "passive"
+POLICIES = (SMART, PASSIVE)
+POLICY_TEXT = {SMART: "they play smart: the app's own advice, with your target and floor",
+               PASSIVE: "they play passive: no locks, each slot keeps its last game"}
+
+
+def opponent_policy(asked: str | None = None) -> tuple[str, str | None]:
+    """(how the opponent is assumed to play, warning).
+
+    `asked` if given (the chat), else OPPONENT_POLICY in .env, else smart.
+    An unknown value falls back to smart, with a warning.
+    """
+    raw = (asked or os.getenv("OPPONENT_POLICY") or SMART).strip().lower()
+    if raw in POLICIES:
+        return raw, None
+    return SMART, f"OPPONENT_POLICY={raw!r} isn't smart or passive, so using smart"
+
+
+def opponent_team(team: Team, week_no: int) -> Team | None:
+    """This week's opponent as a Team (same league and player list as yours),
+    or None if you have no opponent this week (no matchup_id, or nobody else
+    in your matchup)."""
+    league_id = team.league["league_id"]
+    matchups = sleeper.get_matchups(league_id, week_no)
+    mine = next((m for m in matchups if m["roster_id"] == team.roster["roster_id"]), None)
+    if not mine or mine.get("matchup_id") is None:
+        return None
+    other = next((m for m in matchups if m.get("matchup_id") == mine["matchup_id"]
+                  and m["roster_id"] != mine["roster_id"]), None)
+    if other is None:
+        return None
+    roster = next((r for r in sleeper.get_rosters(league_id)
+                   if r["roster_id"] == other["roster_id"]), None)
+    if roster is None:
+        raise ValueError(f"Sleeper's rosters have no roster {other['roster_id']}")
+    owner = next((u for u in sleeper.get_league_users(league_id)
+                  if u.get("user_id") == roster.get("owner_id")), {})
+    return Team(owner, team.league, roster, team.players, [], team.players_as_of)
+
+
+@dataclass
+class Opponent:
+    """Your opponent this week: their team and their lineup, scored the same
+    way as yours (box scores, complete games only), with the locks you told
+    the app about (their lock file, locks.OPPONENT)."""
+    team: Team
+    lineup: Lineup
+
+
+def load_opponent(team: Team, week_no: int, now: datetime) -> tuple[Opponent | None, str | None]:
+    """(your opponent, None), or (None, one sentence why not).
+
+    The win probability is extra, so nothing here stops advise: no opponent
+    this week, or any failure loading them, comes back as the sentence.
+    Their locks aren't marked yet (ask, or keep_saved_locks).
+    """
+    try:
+        opp = opponent_team(team, week_no)
+        if opp is None:
+            return None, "No opponent this week, so no win probability."
+        return Opponent(opp, current_lineup(opp, now, locks.OPPONENT)), None
+    except Exception as err:   # the win probability is optional: never break advise
+        return None, (f"Couldn't load your opponent's lineup ({type(err).__name__}: {err}), "
+                      f"so no win probability this run.")
+
+
+@dataclass
+class LockOdds:
+    """How one lock changes your win probability, in whole percents."""
+    move: LockMove
+    without: int     # recommended lock: skipping it (the rest of the advice taken);
+                     # held lock: following the advice, which passes on it
+    with_it: int     # taking it
+
+    @property
+    def change(self) -> int:
+        """Worked out from the rounded percents, so '+4 (54% -> 58%)' adds up."""
+        return self.with_it - self.without
+
+
+@dataclass
+class WinOdds:
+    """Your chance of winning this week's matchup (winprob.py)."""
+    opponent: str               # their team name
+    policy: str                 # how they're assumed to play: smart or passive
+    percent: int | None         # win probability following the advice; None once both weeks are done
+    my_expected: float          # your average simulated total (your final total once done)
+    their_expected: float       # theirs
+    final: bool                 # both teams are done: the totals are final, nothing simulated
+    locks: list[LockOdds] = field(default_factory=list)   # each recommended lock
+    held: list[LockOdds] = field(default_factory=list)    # each lock held back by the floor (your call)
+    sims: int = winprob.SIMULATIONS
+    seed: int = winprob.SEED
+    warnings: list[str] = field(default_factory=list)
+
+
+def _lineup_after(slots: list[Slot], moves: list[LockMove],
+                  positions: dict[str, set[str]]) -> list[Slot] | None:
+    """The lineup after these locks, each carried out from wherever its player
+    sits by then (an earlier lock can swap him into another slot, and with a
+    lock skipped he may still be where he started). None if a lock can't be
+    done (its slot is taken by an earlier lock)."""
+    after = [Slot(s.label, s.kind, s.player_id, s.score, s.locked) for s in slots]
+    for m in moves:
+        src = next((s for s in after if s.player_id == m.player_id and not s.locked), None)
+        dst = next((s for s in after if s.label == m.to_label), None)
+        if src is None or dst is None or dst.locked:
+            return None
+        after, _ = apply_moves(after, [LockMove(m.player_id, src.label, m.to_label, m.score,
+                                                m.gain)], positions)
+    return after
+
+
+def _app_week(slots: list[Slot], moves: list[LockMove], advice: Advice,
+              positions: dict[str, set[str]]) -> winprob.TeamWeek | None:
+    """The week if these locks are made now and the rest follows the app:
+    each open slot waits on the player the week plan gives it (as advise's
+    'Waiting on' column), who locks by his lock bars and the floor."""
+    after = _lineup_after(slots, moves, positions)
+    if after is None:
+        return None
+    locked_now = {m.player_id for m in moves}
+    remaining = {p: v for p, v in advice.values.items() if p not in locked_now}
+    plan = plan_week(after, pass_values(after, remaining), positions, advice.playing_now)
+    week = []
+    for s in after:
+        if s.locked:
+            week.append(winprob.SlotPlan(s.label, s.player_id, s.score, locked=True))
+            continue
+        pid = plan.assignment.get(s.label)
+        # A planned player with no games left keeps the score he has (his pass value).
+        kept = 0.0 if pid is None or pid in advice.games_left else plan.slot_value(s.label)
+        week.append(winprob.SlotPlan(s.label, pid, kept))
+    return winprob.TeamWeek(tuple(week))
+
+
+def _passive_week(slots: list[Slot]) -> winprob.TeamWeek:
+    """A set-and-forget manager's week: nobody moves or locks, so each slot
+    ends with its player's last game. The locks you entered for them stand."""
+    return winprob.TeamWeek(tuple(winprob.SlotPlan(s.label, s.player_id, s.score, s.locked,
+                                                   winprob.PASSIVE) for s in slots))
+
+
+def _fixed_week(slots: list[Slot]) -> winprob.TeamWeek:
+    """A finished week: every slot keeps the score it has."""
+    return winprob.TeamWeek(tuple(winprob.SlotPlan(s.label, None, s.score) for s in slots))
+
+
+def win_probability(team: Team, lineup: Lineup, advice: Advice, opponent: Opponent,
+                    now: datetime, policy: str | None = None,
+                    sims: int | None = None, seed: int | None = None) -> WinOdds:
+    """Your chance of beating your opponent this week if you follow `advice`.
+
+    `lineup` and `opponent.lineup` have their locks marked (asked, or
+    keep_saved_locks). The opponent plays `policy` (opponent_policy): smart
+    runs the same engine on their lineup, with your target and floor (its
+    recommended locks now, then the week plan); passive never locks.
+
+    Also each recommended lock's change (following all the advice vs.
+    skipping just that one) and each held lock's (taking it vs. following the
+    advice, which passes on it). Every version of your week is played on the
+    same simulated games (winprob.simulated_weeks), so a change is the lock's
+    effect, not luck. Same inputs and seed, same answer.
+
+    Once both teams are done, nothing is simulated: the totals are final.
+    `sims` and `seed` default to winprob's, looked up when this runs (not
+    fixed at import), so tests can change them.
+    """
+    sims = winprob.SIMULATIONS if sims is None else sims
+    seed = winprob.SEED if seed is None else seed
+    policy, problem = opponent_policy(policy)
+    warnings = [problem] if problem else []
+    theirs_advice = _advise(opponent.team, opponent.lineup, now)
+    warnings += [f"opponent: {w}" for w in opponent.lineup.warnings + theirs_advice.warnings]
+    games = {**advice.games_left, **theirs_advice.games_left}
+    name = opponent.team.team_name
+
+    # Your week: the advice, and the versions to compare it with.
+    recommended = [step.move for step in advice.locks]
+    if advice.final_scores:
+        mine, skips, takes = _fixed_week(lineup.slots), [], []
+    else:
+        mine = _app_week(lineup.slots, recommended, advice, team.positions)
+        skips = [(m, _app_week(lineup.slots, [x for x in recommended if x is not m], advice,
+                               team.positions)) for m in recommended]
+        takes = [(h, _app_week(lineup.slots, recommended + [h], advice, team.positions))
+                 for h in advice.held]
+        skips = [(m, w) for m, w in skips if w is not None]
+        takes = [(h, w) for h, w in takes if w is not None]
+
+    # Theirs.
+    if theirs_advice.final_scores:
+        theirs = _fixed_week(opponent.lineup.slots)
+    elif policy == PASSIVE:
+        theirs = _passive_week(opponent.lineup.slots)
+    else:
+        theirs = _app_week(opponent.lineup.slots, [s.move for s in theirs_advice.locks],
+                           theirs_advice, opponent.team.positions)
+
+    if mine.settled(games) and theirs.settled(games):
+        return WinOdds(name, policy, None, mine.total_now(), theirs.total_now(), True,
+                       sims=sims, seed=seed, warnings=warnings)
+
+    odds = winprob.simulate([mine] + [w for _, w in skips] + [w for _, w in takes], theirs,
+                            games, lock_floor, sims, seed)
+    base, rest = odds[0], odds[1:]
+    lock_odds = [LockOdds(m, o.percent, base.percent) for (m, _), o in zip(skips, rest)]
+    held_odds = [LockOdds(h, base.percent, o.percent)
+                 for (h, _), o in zip(takes, rest[len(skips):])]
+    return WinOdds(name, policy, base.percent, base.mine, base.theirs, False, lock_odds,
+                   held_odds, sims, seed, warnings)
 
 
 # ---------- Player profiles ----------

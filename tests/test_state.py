@@ -107,3 +107,18 @@ def test_merge_folder_moves_home_pc_state_in_and_leaves_the_original_alone(tmp_p
     assert [(e["id"], e["time"]) for e in advice_log.load(synced / "advice_log.json")] == [
         (1, "2026-11-03T21:10:00"), (2, "2026-11-05T09:45:28")]
     assert {p.name: p.read_text(encoding="utf-8") for p in home.iterdir()} == home_before
+
+
+def test_merge_folder_merges_the_opponents_lock_files_too(tmp_path):
+    home, synced = tmp_path / "data", tmp_path / "notes" / "state"
+    home.mkdir()
+    synced.mkdir(parents=True)
+    (home / "opp_locks_2026-11-16.json").write_text(
+        json.dumps({"C": {"player_id": "8728", "score": 31.0, "game_id": None}}), encoding="utf-8")
+    (synced / "opp_locks_2026-11-16.json").write_text(
+        json.dumps({"PG": {"player_id": "8747", "score": 24.2, "game_id": None}}), encoding="utf-8")
+    report = state.merge_folder(home, synced)
+    assert report == ["opp_locks_2026-11-16.json: 2 locked slot(s)"]
+    assert set(json.loads((synced / "opp_locks_2026-11-16.json").read_text(encoding="utf-8"))) == {
+        "C", "PG"}
+    assert not (synced / "locks_2026-11-16.json").exists()   # not mixed into your own locks

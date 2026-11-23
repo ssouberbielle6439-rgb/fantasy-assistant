@@ -57,6 +57,7 @@ class FrozenWeek:
         # Clingan's Tuesday game in C (stale); PG and UTIL agree with ours.
         self.sleeper_points = [23.4, 17.6, 16.0, 14.4]
         self.failing: set[str] = set()   # player ids whose Sleeper stats fail
+        self.box_scores_of: dict[str, str] = {}   # made-up player id -> real one whose games he gets
         monkeypatch.delenv("LOCK_TARGET_POINTS", raising=False)
         monkeypatch.setenv("SLEEPER_USERNAME", "demo")
         monkeypatch.setenv("SLEEPER_LEAGUE_ID", "demo-league")
@@ -94,7 +95,7 @@ class FrozenWeek:
         player_id = path.split("/")[-1].split("?")[0]
         if player_id in self.failing:
             raise sleeper_stats.SleeperStatsUnavailable("couldn't reach Sleeper")
-        sample = DATA / f"sleeper_player_{player_id}_2026.json"
+        sample = DATA / f"sleeper_player_{self.box_scores_of.get(player_id, player_id)}_2026.json"
         # Last season's request gets the same games: a stand-in, so each
         # player has enough games for a profile.
         return json.loads(sample.read_text(encoding="utf-8")) if sample.exists() else {}

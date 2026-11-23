@@ -25,19 +25,25 @@ from pathlib import Path
 # state.use() moves this to the folder STATE_DIR names, when it's set.
 STATE_DIR = Path(__file__).resolve().parent.parent / "data"
 
+# Lock files are named <prefix>_<monday>.json: yours, and your opponent's
+# (which you read off Sleeper's app and type in, since the API doesn't show them).
+MINE = "locks"
+OPPONENT = "opp_locks"
+PREFIXES = (MINE, OPPONENT)
 
-def _path(week_start: date) -> Path:
-    return STATE_DIR / f"locks_{week_start.isoformat()}.json"
+
+def _path(week_start: date, prefix: str = MINE) -> Path:
+    return STATE_DIR / f"{prefix}_{week_start.isoformat()}.json"
 
 
-def load(week_start: date) -> dict[str, dict]:
+def load(week_start: date, prefix: str = MINE) -> dict[str, dict]:
     """Saved locks for the week: slot label -> {"player_id", "score", "game_id"}.
 
     Files saved before scores were kept hold just the player id; those come
     back with score None (meaning: use the slot's current score). Files saved
     before 11/05 have no game_id; those come back with None (keep the score).
     """
-    path = _path(week_start)
+    path = _path(week_start, prefix)
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -46,9 +52,9 @@ def load(week_start: date) -> dict[str, dict]:
             for label, lock in raw.items()}
 
 
-def save(week_start: date, locks: dict[str, dict]) -> None:
+def save(week_start: date, locks: dict[str, dict], prefix: str = MINE) -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _path(week_start).write_text(json.dumps(locks, indent=2), encoding="utf-8")
+    _path(week_start, prefix).write_text(json.dumps(locks, indent=2), encoding="utf-8")
 
 
 def merge(mine: dict, theirs: dict) -> tuple[dict, list[tuple[str, str, str]]]:

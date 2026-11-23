@@ -13,7 +13,7 @@ import pytest
 import requests
 
 from fantasy_assistant import __main__ as cli
-from fantasy_assistant import advice_log, chat, gemini, service
+from fantasy_assistant import advice_log, chat, gemini, service, winprob
 from fantasy_assistant.lineup import LockMove
 from test_service import (CLINGAN, FRIDAY_NOON, MOBLEY, MURRAY, PLAYERS, SMITH_JR,  # noqa: F401
                           FrozenWeek, save_mobley_lock, week)
@@ -423,6 +423,66 @@ def test_numbers_are_found_inside_tool_text_too():
                              "locked": True, "games": [{"pct": 97}]})
     assert found == {4.1, 18.8, 1.2, 97.0}
     assert chat.unmatched_numbers("Lock at 18.8, gain 4.1, not 5.5 or 5.5.", found) == ["5.5"]
+
+
+def test_number_check_looks_at_numbers_before_a_percent_sign():
+    known = {58.0, 4.0, 54.0}
+    text_ = "You're at 58% (up from 54 %), +4 points; 3 games left; not 61% or 12.5%."
+    assert chat.unmatched_numbers(text_, known) == ["61", "12.5"]
+
+
+# ---------- Win probability ----------
+
+@pytest.fixture
+def friday_vs_rival(week, monkeypatch):
+    """The Friday session, now against Rival Five, with fewer simulations."""
+    from test_win_probability import SIMS, add_opponent
+
+    add_opponent(week, monkeypatch)
+    monkeypatch.setattr(winprob, "SIMULATIONS", SIMS)
+    save_mobley_lock()
+    return chat.ChatSession(service.load_team(), SETTINGS, clock=lambda: FRIDAY_NOON)
+
+
+def test_what_are_my_odds_runs_get_win_probability(friday_vs_rival, gemini_says):
+    def explain(contents):
+        r = last_tool_results(contents)["get_win_probability"]
+        [lock] = r["recommended_locks"]
+        return text(f"You win {r['win_probability_pct']}% of simulated weeks vs {r['opponent']}. "
+                    f"Locking Clingan takes you from {lock['win_pct_if_you_skip_it']}% to "
+                    f"{lock['win_pct_if_you_lock']}% (below your 25 target).")
+    fake = gemini_says(reply(call("get_win_probability", "w1")), explain)
+    answer = friday_vs_rival.ask("What are my odds this week?")
+    assert answer.tools_used == ["get_win_probability"]
+    assert answer.unmatched == [] and answer.labels == []
+    result = last_tool_results(fake.requests[1])["get_win_probability"]
+    assert (result["opponent"], result["opponent_policy"], result["week_done"]) == (
+        "Rival Five", "smart", False)
+    [lock] = result["recommended_locks"]
+    assert lock["change_in_win_pct"] == lock["win_pct_if_you_lock"] - lock["win_pct_if_you_skip_it"]
+    assert lock["label"] == "below your 25 target"
+    assert advice_log.load() == []   # asking never saves advice
+
+
+def test_a_made_up_percent_gets_the_number_check(friday_vs_rival, gemini_says):
+    gemini_says(reply(call("get_win_probability")), text("You're a 99% favorite."))
+    assert friday_vs_rival.ask("Am I going to win?").unmatched == ["99"]
+
+
+def test_what_if_my_opponent_doesnt_lock_asks_for_passive(friday_vs_rival, gemini_says):
+    fake = gemini_says(reply(call("get_win_probability", opponent_policy="passive")),
+                       text("Here you go."))
+    friday_vs_rival.ask("What if my opponent never locks?")
+    result = last_tool_results(fake.requests[1])["get_win_probability"]
+    assert result["opponent_policy"] == "passive"
+    assert result["about_policy"] == "they play passive: no locks, each slot keeps its last game"
+
+
+def test_win_probability_without_an_opponent_says_why(friday, gemini_says):
+    fake = gemini_says(reply(call("get_win_probability")), text("No opponent this week."))
+    friday.ask("What are my odds?")
+    assert last_tool_results(fake.requests[1])["get_win_probability"] == {
+        "error": "No opponent this week, so no win probability."}
 
 
 def test_the_rules_ban_the_ais_own_arithmetic():

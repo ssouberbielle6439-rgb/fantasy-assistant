@@ -16,8 +16,8 @@ How one question works (ChatSession.ask):
 
 The math decides; the AI only explains. Every verdict and number comes from
 a tool. The system prompt says so, and two checks in code back it up: the
-number check (unmatched_numbers) flags any decimal in an answer that no tool
-gave and the user didn't type, and the label check (ChatSession.missing_labels)
+number check (unmatched_numbers) flags any decimal or percent in an answer
+that no tool gave and the user didn't type, and the label check (ChatSession.missing_labels)
 adds advise's "below your 25 target" or "held back by today's floor" to a lock
 answer that left it out.
 
@@ -100,7 +100,8 @@ def which_player_question(team: service.Team, match: NameMatch) -> str:
 # ---------- The number check ----------
 
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
-_DECIMAL = re.compile(r"\d+\.\d+")
+# What the number check looks at: decimals, and any number written before a %.
+_CHECKED = re.compile(r"\d+\.\d+|\d+(?=\s*%)")
 
 
 def numbers_in(value) -> set[float]:
@@ -123,15 +124,16 @@ def numbers_in(value) -> set[float]:
 
 
 def unmatched_numbers(text: str, known: set[float]) -> list[str]:
-    """Decimals in an answer that no tool gave and the user didn't type.
+    """Decimals and percents in an answer that no tool gave and the user didn't type.
 
-    Only numbers with a decimal point are checked: fantasy scores, gains and
-    expected points always have one, while counts, dates and slot names
-    (UTIL2, 3 games, 11/20) don't. The system prompt bans the AI's own
-    arithmetic, so a flagged number is a made-up one or the AI's own math.
+    Checked: numbers with a decimal point (fantasy scores, gains and expected
+    points always have one) and numbers written before a % (win probability,
+    chance to play, percent right). Counts, dates and slot names (UTIL2,
+    3 games, 11/20) aren't. The system prompt bans the AI's own arithmetic, so
+    a flagged number is a made-up one or the AI's own math.
     """
     flagged = []
-    for n in _DECIMAL.findall(text):
+    for n in _CHECKED.findall(text):
         if round(float(n), 1) not in known and n not in flagged:
             flagged.append(n)
     return flagged
@@ -171,7 +173,8 @@ them to the roster and asks the manager if a name is unclear. If a tool says a \
 name isn't on the roster, say so.
 7. For a score the manager gives you ("he scored 26"), use lock_decision. For \
 the scores already in the lineup, and for who to start today, use get_advice. \
-For injuries and who might sit, use get_injuries (Sleeper's injury statuses).
+For injuries and who might sit, use get_injuries (Sleeper's injury statuses). \
+For the chance of winning this week's matchup, use get_win_probability.
 8. If a tool result has warnings that change the answer, mention them in a few words.
 9. When a lock comes with a label (below the manager's target, or held back by \
 today's floor), put the label with the call, for example "LOCK Jamal Murray in \
@@ -186,7 +189,9 @@ OPEN = empty slot. Gain = expected points a lock adds to the week compared with 
 passing. Expected = what the app expects that slot to end up locking this week. \
 The target is the manager's preferred lock score; the floor is the lowest score \
 worth locking today (lower on Sunday). A free roll = starting a spare who plays \
-today in a slot whose planned player doesn't."""
+today in a slot whose planned player doesn't. Win probability = how often the \
+manager's total beat the opponent's in the app's simulated weeks, if he follows \
+the app's advice; a lock's change in win probability is in percentage points."""
 
 
 _PLAYER = {"type": "string",
@@ -232,6 +237,22 @@ TOOLS = [
      "description": "Who on the roster plays which day this fantasy week (Monday to Sunday): "
                     "each player's games, games left, chance to play his next game, whether "
                     "his game is on now, and how many players play each day."},
+    {"name": "get_win_probability",
+     "description": "The manager's chance of winning this week's matchup, from 10,000 "
+                    "simulated weeks: every remaining game drawn from each player's average, "
+                    "swing and chance to play; the manager follows the app's advice (locks "
+                    "held back by the floor are passed on); the opponent plays 'smart' (the "
+                    "same engine) or 'passive' (never locks: each slot keeps its last game). "
+                    "Also each recommended lock's change in win probability vs. skipping it, "
+                    "and each held lock's change if he takes it anyway (his call), both teams' "
+                    "expected totals, and the final totals once the week is done. Both teams' "
+                    "locks are the ones saved by the advise command. Use for 'what are my "
+                    "odds', 'am I going to win', 'what if my opponent doesn't lock'.",
+     "parameters": {"type": "object",
+                    "properties": {"opponent_policy": {
+                        "type": "string", "enum": ["smart", "passive"],
+                        "description": "How the opponent plays. Leave out for the manager's "
+                                       "setting (smart unless he changed it)."}}}},
     {"name": "review",
      "description": "How the app's saved advice did: each LOCK, PASS and HELD call graded "
                     "RIGHT, WRONG, PENDING or FREE on the player's next game, the tally per "
@@ -338,7 +359,8 @@ class ChatSession:
                 "lock_decision": self.tool_lock_decision,
                 "player_profile": self.tool_player_profile,
                 "get_injuries": self.tool_get_injuries,
-                "get_week_grid": self.tool_get_week_grid, "review": self.tool_review}.get(name)
+                "get_week_grid": self.tool_get_week_grid, "review": self.tool_review,
+                "get_win_probability": self.tool_get_win_probability}.get(name)
         if tool is None:
             return {"error": f"There's no tool named {name!r}."}
         try:
@@ -599,6 +621,58 @@ class ChatSession:
                             "beat the score. FREE = he had no games left, so not graded.",
             "warnings": result.lineup_warnings + result.log_warnings,
         }
+
+    def tool_get_win_probability(self, opponent_policy=None) -> dict:
+        policy = str(opponent_policy).strip().lower() if opponent_policy else None
+        if policy and policy not in service.POLICIES:
+            return {"error": f"opponent_policy has to be smart or passive, not {opponent_policy!r}."}
+        lineup, advice = self._lineup(), self._advice()   # advice never saved
+        opponent, problem = service.load_opponent(self.team, lineup.week_no, self.now)
+        if opponent is None:
+            return {"error": problem}
+        service.keep_saved_locks(opponent.lineup)
+        odds = service.win_probability(self.team, lineup, advice, opponent, self.now, policy)
+        warnings = lineup.warnings + advice.warnings + odds.warnings
+        result = {"opponent": odds.opponent, "opponent_policy": odds.policy,
+                  "about_policy": service.POLICY_TEXT[odds.policy]}
+        if odds.final:
+            result.update(week_done=True, final_total_you=_r(odds.my_expected),
+                          final_total_opponent=_r(odds.their_expected), warnings=warnings)
+            return result
+        name = self._name
+        below = {st.move.player_id for st in advice.locks if st.below_target}
+        locks = []
+        for o in odds.locks:
+            m = o.move
+            lock = {"player": name(m.player_id), "slot": m.to_label, "score": _r(m.score),
+                    "win_pct_if_you_lock": o.with_it, "win_pct_if_you_skip_it": o.without,
+                    "change_in_win_pct": o.change}
+            if m.player_id in below:
+                lock["label"] = service.target_label(advice.target)
+                self._note_label(m.player_id, m.score, m.to_label, lock["label"])
+            locks.append(lock)
+        held = []
+        for o in odds.held:
+            h, label = o.move, service.floor_label(advice.floor)
+            held.append({"player": name(h.player_id), "slot": h.to_label, "score": _r(h.score),
+                         "label": label, "win_pct_if_you_lock_it_anyway": o.with_it,
+                         "win_pct_if_you_pass": o.without, "change_in_win_pct": o.change,
+                         "note": "The manager's call: the app holds it back."})
+            self._note_label(h.player_id, h.score, h.to_label, label)
+        result.update(
+            week_done=False,
+            win_probability_pct=odds.percent,
+            expected_total_you=_r(odds.my_expected),
+            expected_total_opponent=_r(odds.their_expected),
+            simulated_weeks=odds.sims,
+            recommended_locks=locks,
+            held_by_floor=held,
+            about="Win probability if the manager follows the app's advice (held locks "
+                  "passed on). Changes are in percentage points. The opponent's locks are "
+                  "the ones the manager entered in the advise command; slots he didn't "
+                  "enter count as open.",
+            warnings=warnings)
+        return result
 
     def _name(self, pid: str | None) -> str | None:
         return self.team.name(pid) if pid else None

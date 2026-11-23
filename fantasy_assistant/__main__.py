@@ -110,9 +110,10 @@ def cmd_week() -> int:
     return 0
 
 
-def _ask_locks(slots, saved: dict[str, dict]) -> list:
+def _ask_locks(slots, saved: dict[str, dict], whose: str | None = None) -> list:
     """Ask which slots are locked and mark them (with the right score) on `slots`.
-    Returns the slots locked just now (not saved before, no score typed)."""
+    Returns the slots locked just now (not saved before, no score typed).
+    `whose`: the other team's name, when asking about your opponent's lineup."""
     from .locks import clean, lock_slots, parse_answer, typed_scores, unlocked_by
 
     labels = [s.label for s in slots]
@@ -121,7 +122,8 @@ def _ask_locks(slots, saved: dict[str, dict]) -> list:
     kept = [lab for lab in saved if lab in labels]
     hint = ", ".join(kept) if kept else "none"
     while True:
-        answer = _read(f"\nWhich slots are locked? (e.g. PG F UTIL2, F=27.9 if Sleeper shows "
+        which = f"Which of {whose}'s slots are locked?" if whose else "Which slots are locked?"
+        answer = _read(f"\n{which} (e.g. PG F UTIL2, F=27.9 if Sleeper shows "
                        f"the wrong score, 'none', or Enter to keep: {hint}) > ")
         chosen = parse_answer(answer, labels, kept)
         if chosen is None:
@@ -148,8 +150,59 @@ def _read(prompt: str) -> str:
         return ""
 
 
+def _show_lineup(team: service.Team, lineup: service.Lineup) -> None:
+    """A lineup table for the top of advise (yours, or your opponent's)."""
+    from . import locks
+
+    for s in lineup.slots:
+        pid, score = locks.shown(s, lineup.saved)
+        name = team.name(pid) if pid else "(empty)"
+        mark = "  [saved as locked]" if s.label in lineup.saved else ""
+        print(f"  {s.label:<6} {name:<24} {score:6.1f}{mark}")
+    for line in lineup.notes:
+        print(f"  Note: {line}")
+
+
+def _change(odds: service.LockOdds) -> str:
+    """'win probability +4 (54% -> 58%)'."""
+    return f"win probability {odds.change:+d} ({odds.without}% -> {odds.with_it}%)"
+
+
+def _win_probability(team: service.Team, lineup: service.Lineup, advice: service.Advice,
+                     now: datetime) -> service.WinOdds | None:
+    """Your opponent's lineup, the question about their locks, and your odds.
+
+    Optional: with no opponent this week, or if their data fails, it prints
+    one line and returns None, and advise goes on as before.
+    """
+    opponent, problem = service.load_opponent(team, lineup.week_no, now)
+    if opponent is None:
+        print(f"\n  ({problem})")
+        return None
+    name = opponent.team.team_name
+    print(f"\n{name}'s lineup right now (Sleeper's API doesn't show their locks, so the app "
+          f"asks)\n")
+    _show_lineup(opponent.team, opponent.lineup)
+    newly_locked = _ask_locks(opponent.lineup.slots, opponent.lineup.saved, whose=name)
+    for note in service.record_locks(opponent.team, opponent.lineup, newly_locked):
+        print(f"  Note: {note}")
+    try:
+        odds = service.win_probability(team, lineup, advice, opponent, now)
+    except Exception as err:   # optional: never stop the advice over it
+        print(f"\n  (Couldn't work out the win probability: {type(err).__name__}: {err}.)")
+        return None
+    _print_warnings(odds.warnings)
+    if odds.final:
+        print(f"\nFinal totals: you {odds.my_expected:.1f}, {name} {odds.their_expected:.1f}.")
+        return odds
+    print(f"\nWin probability: {odds.percent}% vs {name} ({service.POLICY_TEXT[odds.policy]}; "
+          f"{odds.sims:,} simulated weeks)")
+    print(f"  Expected totals: you {odds.my_expected:.1f}, {name} {odds.their_expected:.1f}.")
+    return odds
+
+
 def cmd_advise() -> int:
-    from . import locks, schedule
+    from . import schedule
     from .lineup import today_line
 
     team = _load_team()
@@ -160,13 +213,7 @@ def cmd_advise() -> int:
 
     print(f"Week {lineup.week_no}: your lineup right now (scores from Sleeper's box scores; "
           f"locked slots show the saved game)\n")
-    for s in lineup.slots:
-        pid, score = locks.shown(s, lineup.saved)
-        name = team.name(pid) if pid else "(empty)"
-        mark = "  [saved as locked]" if s.label in lineup.saved else ""
-        print(f"  {s.label:<6} {name:<24} {score:6.1f}{mark}")
-    for line in lineup.notes:
-        print(f"  Note: {line}")
+    _show_lineup(team, lineup)
     newly_locked = _ask_locks(lineup.slots, lineup.saved)
     for note in service.record_locks(team, lineup, newly_locked):
         print(f"  Note: {note}")
@@ -178,7 +225,13 @@ def cmd_advise() -> int:
     # Week's over for this lineup: no advice to give, just the final scores.
     if advice.final_scores:
         print("\n" + "\n".join(advice.final_scores))
+        _win_probability(team, lineup, advice, now)   # both totals (theirs may still be going)
         return 0
+
+    # Your odds this week if you follow the advice below (the advice doesn't use them).
+    odds = _win_probability(team, lineup, advice, now)
+    lock_odds = {o.move.player_id: o for o in odds.locks} if odds else {}
+    held_odds = {o.move.player_id: o for o in odds.held} if odds else {}
 
     # 1. Which scores in hand to lock, and in which slot.
     if advice.locks:
@@ -187,6 +240,9 @@ def cmd_advise() -> int:
             below = f"  [{service.target_label(advice.target)}]" if step.below_target else ""
             soon = f"  [{schedule.LOCK_BEFORE_TIPOFF}]" if step.before_tipoff else ""
             print(f"  - {step.instruction}{below}{soon}")
+            if step.move.player_id in lock_odds:
+                print(f"      {_change(lock_odds[step.move.player_id]).capitalize()} "
+                      f"vs. skipping this lock.")
         print(f"  These add about {advice.total_gain:.1f} expected points to your week vs. passing.")
     else:
         print("\nNo locks recommended right now: every score in hand is worth passing on.")
@@ -194,6 +250,8 @@ def cmd_advise() -> int:
         held = service.floor_label(advice.floor)
         print(f"  ({held[0].upper() + held[1:]}: locking {short(h.player_id)}'s "
               f"{h.score:.1f} in {h.to_label} would add about {h.gain:.1f}. Your call.)")
+        if h.player_id in held_odds:
+            print(f"      (Locking it anyway: {_change(held_odds[h.player_id])}. Your call.)")
 
     # 2. The plan for the rest of the week: which player each open slot is waiting on.
     print(f"\n{'Slot':<6} {'Now':<13} {'Score':>6}  {'Status':<7}  {'Waiting on':<13} {'Exp':>5}  "
@@ -228,7 +286,7 @@ def cmd_advise() -> int:
           f"but not to the bench (that clears the game).")
 
     # 5. Save this advice so `review` can check it once the games are played.
-    run_id = service.save_advice(advice)
+    run_id = service.save_advice(advice, odds)
     print(f"\nSaved as advice #{run_id}. Disagree? python -m fantasy_assistant note {run_id} "
           f"[slot] your reason")
     return 0
@@ -412,7 +470,7 @@ def cmd_merge(args: list[str]) -> int:
     for line in state.merge_folder(source, target) or ["nothing to merge"]:
         print(f"  {line}")
     print(f"\nThe originals in {source} weren't changed. Once this looks right, you can "
-          f"delete the locks_*.json and advice_log.json files there.")
+          f"delete the locks_*.json, opp_locks_*.json and advice_log.json files there.")
     return 0
 
 
