@@ -631,7 +631,10 @@ class ChatSession:
         if opponent is None:
             return {"error": problem}
         service.keep_saved_locks(opponent.lineup)
-        odds = service.win_probability(self.team, lineup, advice, opponent, self.now, policy)
+        # The odds calls (step B) are advise's for now; leaving them out keeps
+        # the chat as quick as before. The win probability is the same either way.
+        odds = service.win_probability(self.team, lineup, advice, opponent, self.now, policy,
+                                       odds_calls=False)
         warnings = lineup.warnings + advice.warnings + odds.warnings
         result = {"opponent": odds.opponent, "opponent_policy": odds.policy,
                   "about_policy": service.POLICY_TEXT[odds.policy]}

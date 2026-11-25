@@ -38,8 +38,9 @@ from datetime import date, datetime, timedelta
 from . import advice_log, gamelogs, locks, schedule, sleeper, sleeper_stats, slot_scores, winprob
 from .advice_log import Call, SlotOutcome
 from .lineup import (LOCK_TARGET, FutureGame, LockMove, Slot, TodayMove, WeekPlan, alternatives,
-                     apply_moves, depth_label, final_scores, lock_floor, pass_values, plan_week,
-                     player_values, recommend_locks, slot_labels, today_plan)
+                     apply_moves, can_fill, depth_label, final_scores, lock_floor, pass_values,
+                     plan_week, player_values, recommend_locks, slot_flexibility, slot_labels,
+                     today_plan)
 from .lockin import GameForecast, value_of_waiting
 from .profile import PlayerProfile, build_profile
 from .scoring import fantasy_points, unknown_scoring_keys
@@ -501,7 +502,23 @@ def save_advice(advice: Advice, odds: WinOdds | None = None) -> int:
             "percent": odds.percent, "opponent": odds.opponent, "policy": odds.policy,
             "my_expected": round(odds.my_expected, 1),
             "their_expected": round(odds.their_expected, 1),
-            "sims": odds.sims, "seed": odds.seed}
+            "sims": odds.sims, "seed": odds.seed,
+            # Step B: the odds call for each score in hand, so review can grade
+            # the ones that disagreed with the points call.
+            "check_seed": odds.check_seed, "playoff": odds.playoff,
+            "odds_calls": [{
+                "player_id": c.player_id, "score": c.score, "from": c.from_label,
+                "points": c.points, "points_slot": c.points_slot,
+                "odds": c.odds, "odds_slot": c.odds_slot,
+                "points_percent": c.points_percent, "odds_percent": c.odds_percent,
+                "points_given_up": round(-c.points_change, 1),   # negative: points gained
+                "shown": c.shown,
+                **({"check_gain": round(c.check_gain, 2)} if c.check_gain is not None else {}),
+            } for c in odds.calls]}
+        if odds.combined is not None:
+            entry["win_probability"]["combined"] = {
+                "percent": odds.combined.percent,
+                "points_given_up": round(-odds.combined.points_change, 1)}
     return advice_log.append(entry)
 
 
@@ -672,6 +689,65 @@ class LockOdds:
         return self.with_it - self.without
 
 
+LOCK, PASS, HELD = "LOCK", "PASS", "HELD"
+PLAYOFF_START_FALLBACK = 22    # Santiago's league (11/24), if Sleeper's setting is missing
+ODDS_CALL_MIN_GAIN = 1        # an odds call is shown only if it gains at least 1 percentage
+                               # point, both on the main simulation and on the re-check
+
+
+def playoff_week_start(league: dict) -> int:
+    """The first playoff week, from Sleeper's league settings
+    (`settings.playoff_week_start`, 22 in Santiago's league). Missing or not a
+    positive whole number: PLAYOFF_START_FALLBACK. Every week from it on is a
+    playoff week (only the win counts), whatever the number of rounds."""
+    start = (league.get("settings") or {}).get("playoff_week_start")
+    return start if isinstance(start, int) and start > 0 else PLAYOFF_START_FALLBACK
+
+
+def under_floor_label(floor: float) -> str:
+    """How an odds call marks a lock under today's floor: "under today's 23 floor"."""
+    return f"under today's {floor:.0f} floor"
+
+
+@dataclass
+class OddsCall:
+    """For one score in hand: the points call (advise's) and the odds call.
+
+    The odds call is the version of the week with the best win probability
+    when only this player's call changes and the rest of the points advice
+    stands. It's `shown` only if it beats the points call by at least
+    ODDS_CALL_MIN_GAIN percentage points on the main simulation AND on a
+    second, independent one (the noise check), and wins any fight over a
+    slot. Otherwise the odds call is the points call (a HELD counts as PASS:
+    the advice passes on it) and both percents are the advice's.
+    """
+    player_id: str
+    score: float
+    from_label: str          # the slot he's in now
+    points: str              # LOCK, PASS or HELD: advise's call
+    points_slot: str | None  # LOCK or HELD: the slot advise names
+    odds: str                # LOCK or PASS
+    odds_slot: str | None    # LOCK: where the odds would lock him
+    points_percent: int      # win probability following all the points advice
+    odds_percent: int        # the same, with this one call changed to the odds call
+    points_change: float     # odds version's expected total minus the advice's (same draws)
+    shown: bool = False      # a real disagreement: passed the noise check, won its slot
+    check_gain: float | None = None   # percentage points gained on the re-check (unrounded)
+    label: str | None = None          # an odds LOCK under the floor or under the target
+
+    @property
+    def change(self) -> int:
+        """From the rounded percents, so '+6% (64% -> 70%)' adds up."""
+        return self.odds_percent - self.points_percent
+
+
+@dataclass
+class CombinedOdds:
+    """Every shown odds call taken together (only worked out for 2 or more)."""
+    percent: int
+    points_change: float
+
+
 @dataclass
 class WinOdds:
     """Your chance of winning this week's matchup (winprob.py)."""
@@ -686,6 +762,14 @@ class WinOdds:
     sims: int = winprob.SIMULATIONS
     seed: int = winprob.SEED
     warnings: list[str] = field(default_factory=list)
+    calls: list[OddsCall] = field(default_factory=list)  # one per score in hand (step B)
+    combined: CombinedOdds | None = None   # all shown odds calls together, if 2 or more
+    check_seed: int | None = None          # the noise check's seed (None: nothing to re-check)
+    playoff: bool = False                  # a playoff week: only the win counts
+
+    @property
+    def disagreements(self) -> list[OddsCall]:
+        return [c for c in self.calls if c.shown]
 
 
 def _lineup_after(slots: list[Slot], moves: list[LockMove],
@@ -740,9 +824,81 @@ def _fixed_week(slots: list[Slot]) -> winprob.TeamWeek:
     return winprob.TeamWeek(tuple(winprob.SlotPlan(s.label, None, s.score) for s in slots))
 
 
+@dataclass
+class _Try:
+    """One version of your week to compare for a score in hand (an odds call)."""
+    odds: str                  # LOCK or PASS
+    slot: str | None           # LOCK: where
+    moves: list[LockMove]      # the points advice's locks, with this one call changed
+    week: winprob.TeamWeek
+
+
+def _odds_tries(lineup: Lineup, advice: Advice, positions: dict[str, set[str]]
+                ) -> list[tuple[Slot, str, str | None, list[_Try]]]:
+    """For each score in hand: (his slot, points call, its slot, the versions to try).
+
+    Scores in hand are the ones recommend_locks considers: an open slot's
+    player with a score, whose game isn't on right now. Each version changes
+    only his call and keeps the rest of the points advice:
+      * points PASS or HELD: lock him in each open slot he can fill;
+      * points LOCK: pass instead, or lock him in each other open slot.
+    A slot whose player's game is on is only used if that player can swap
+    into the slot being vacated (he can't be benched, rule 8). Versions that
+    can't be carried out (the slot is taken by another lock) are left out.
+    """
+    recommended = [step.move for step in advice.locks]
+    kind_of = {s.label: s.kind for s in lineup.slots}
+    out = []
+    for seat in lineup.slots:
+        pid = seat.player_id
+        if seat.locked or not pid or seat.score <= 0 or pid in advice.playing_now:
+            continue
+        mine = next((m for m in recommended if m.player_id == pid), None)
+        held = next((h for h in advice.held if h.player_id == pid), None)
+        points = LOCK if mine else HELD if held else PASS
+        points_slot = mine.to_label if mine else held.to_label if held else None
+        versions: list[tuple[str, str | None, list[LockMove]]] = []
+        if mine:
+            versions.append((PASS, None, [m for m in recommended if m is not mine]))
+        for k in lineup.slots:
+            if (k.locked or (mine and k.label == mine.to_label)
+                    or not can_fill(k.kind, positions.get(pid, set()))):
+                continue
+            if k.player_id in advice.playing_now and k.player_id != pid and not can_fill(
+                    kind_of[seat.label], positions.get(k.player_id, set())):
+                continue
+            lock = LockMove(pid, seat.label, k.label, seat.score, 0.0)
+            moves = ([lock if m is mine else m for m in recommended] if mine
+                     else recommended + [lock])
+            versions.append((LOCK, k.label, moves))
+        tries = []
+        for odds, slot, moves in versions:
+            week = _app_week(lineup.slots, moves, advice, positions)
+            if week is not None:
+                tries.append(_Try(odds, slot, moves, week))
+        out.append((seat, points, points_slot, tries))
+    return out
+
+
+def _combined_moves(recommended: list[LockMove], calls: list[OddsCall]) -> list[LockMove]:
+    """The points advice's locks with every shown odds call made."""
+    moves = list(recommended)
+    for c in calls:
+        lock = LockMove(c.player_id, c.from_label, c.odds_slot, c.score, 0.0) if c.odds == LOCK else None
+        i = next((i for i, m in enumerate(moves) if m.player_id == c.player_id), None)
+        if i is None:          # points PASS or HELD, odds LOCK: add it
+            moves.append(lock)
+        elif lock is None:     # points LOCK, odds PASS: skip it
+            del moves[i]
+        else:                  # points LOCK, odds LOCK elsewhere: same place in the order
+            moves[i] = lock
+    return moves
+
+
 def win_probability(team: Team, lineup: Lineup, advice: Advice, opponent: Opponent,
                     now: datetime, policy: str | None = None,
-                    sims: int | None = None, seed: int | None = None) -> WinOdds:
+                    sims: int | None = None, seed: int | None = None,
+                    odds_calls: bool = True) -> WinOdds:
     """Your chance of beating your opponent this week if you follow `advice`.
 
     `lineup` and `opponent.lineup` have their locks marked (asked, or
@@ -755,6 +911,12 @@ def win_probability(team: Team, lineup: Lineup, advice: Advice, opponent: Oppone
     advice, which passes on it). Every version of your week is played on the
     same simulated games (winprob.simulated_weeks), so a change is the lock's
     effect, not luck. Same inputs and seed, same answer.
+
+    With `odds_calls` (step B), also each score in hand's odds call: the call
+    that gives the best win probability, next to the points call (OddsCall).
+    The points advice stays the main call; nothing here changes it. The odds
+    decide today's locks only: later simulated days still follow the points
+    bars and the floor.
 
     Once both teams are done, nothing is simulated: the totals are final.
     `sims` and `seed` default to winprob's, looked up when this runs (not
@@ -795,14 +957,111 @@ def win_probability(team: Team, lineup: Lineup, advice: Advice, opponent: Oppone
         return WinOdds(name, policy, None, mine.total_now(), theirs.total_now(), True,
                        sims=sims, seed=seed, warnings=warnings)
 
-    odds = winprob.simulate([mine] + [w for _, w in skips] + [w for _, w in takes], theirs,
-                            games, lock_floor, sims, seed)
-    base, rest = odds[0], odds[1:]
-    lock_odds = [LockOdds(m, o.percent, base.percent) for (m, _), o in zip(skips, rest)]
-    held_odds = [LockOdds(h, base.percent, o.percent)
-                 for (h, _), o in zip(takes, rest[len(skips):])]
+    # Every version is simulated in one go on the same draws: the advice, each
+    # lock skipped or taken (step A), and the odds calls' versions (step B).
+    # A version's numbers don't depend on which others are simulated with it,
+    # so adding step B's can't change step A's. Identical versions (the same
+    # week reached two ways) are simulated once.
+    tries = (_odds_tries(lineup, advice, team.positions)
+             if odds_calls and not advice.final_scores else [])
+    versions = ([mine] + [w for _, w in skips] + [w for _, w in takes]
+                + [t.week for *_, ts in tries for t in ts])
+    unique = list(dict.fromkeys(versions))
+    by_week = dict(zip(unique, winprob.simulate(unique, theirs, games, lock_floor, sims, seed)))
+    base = by_week[mine]
+    lock_odds = [LockOdds(m, by_week[w].percent, base.percent) for m, w in skips]
+    held_odds = [LockOdds(h, base.percent, by_week[w].percent) for h, w in takes]
+    calls, combined, check_seed = _odds_calls(tries, by_week, mine, theirs, games, lineup,
+                                              advice, team.positions, sims, seed)
     return WinOdds(name, policy, base.percent, base.mine, base.theirs, False, lock_odds,
-                   held_odds, sims, seed, warnings)
+                   held_odds, sims, seed, warnings, calls, combined, check_seed,
+                   lineup.week_no >= playoff_week_start(team.league))
+
+
+def _odds_calls(tries, by_week: dict[winprob.TeamWeek, winprob.Odds], mine: winprob.TeamWeek,
+                theirs: winprob.TeamWeek, games: dict[str, list[FutureGame]], lineup: Lineup,
+                advice: Advice, positions: dict[str, set[str]], sims: int, seed: int
+                ) -> tuple[list[OddsCall], CombinedOdds | None, int | None]:
+    """(each score in hand's OddsCall, all shown calls together, the check seed).
+
+    1. Each player's best version, on the UNROUNDED odds. Ties: more expected
+       points, then recommend_locks's rule (the most restrictive slot, then
+       the slot he's in). It's a candidate if it beats the advice by at least
+       ODDS_CALL_MIN_GAIN in the rounded percents shown.
+    2. The noise check: picking the best of many versions also picks up luck
+       in the draws, so each candidate (and the advice) is simulated again on
+       a second, independent set of weeks (seed + 1). It's kept only if it
+       still gains ODDS_CALL_MIN_GAIN percentage points there, unrounded.
+    3. Two calls locking into the same slot: the bigger gain keeps it (then
+       more expected points, then the more restrictive slot).
+    4. Two or more calls left: they're also simulated together (same draws).
+    """
+    base = by_week[mine]
+    kind_of = {s.label: s.kind for s in lineup.slots}
+
+    def flexibility(t: _Try) -> int:
+        """Higher for a more restrictive slot. A pass (no slot) ranks last: on
+        an exact tie with a lock, the lock in hand is the safer call."""
+        return -slot_flexibility(kind_of[t.slot]) if t.slot else -99
+
+    calls, best = [], {}
+    for seat, points, points_slot, ts in tries:
+        calls.append(OddsCall(seat.player_id, seat.score, seat.label, points, points_slot,
+                              LOCK if points == LOCK else PASS,
+                              points_slot if points == LOCK else None,
+                              base.percent, base.percent, 0.0))
+        if not ts:
+            continue
+        top = max(ts, key=lambda t: (by_week[t.week].win, by_week[t.week].mine, flexibility(t),
+                                     t.slot == seat.label))
+        o = by_week[top.week]
+        if o.win > base.win and o.percent - base.percent >= ODDS_CALL_MIN_GAIN:
+            best[seat.player_id] = top
+    if not best:
+        return calls, None, None
+
+    # 2. The noise check, on another seed.
+    check_seed = seed + 1
+    weeks = list(dict.fromkeys([mine] + [t.week for t in best.values()]))
+    recheck = dict(zip(weeks, winprob.simulate(weeks, theirs, games, lock_floor, sims, check_seed)))
+    kept = {}
+    for pid, t in best.items():
+        gain = round(100 * (recheck[t.week].win - recheck[mine].win), 6)   # float noise off
+        if gain >= ODDS_CALL_MIN_GAIN:
+            kept[pid] = (t, gain)
+
+    # 3. One lock per slot.
+    def strength(t: _Try):
+        o = by_week[t.week]
+        return (o.win, o.mine, flexibility(t))
+    for pid, (t, _) in list(kept.items()):
+        rivals = [u for q, (u, _) in kept.items() if q != pid and u.slot and u.slot == t.slot]
+        if any(strength(u) > strength(t) for u in rivals):
+            del kept[pid]
+
+    shown = []
+    for c in calls:
+        if c.player_id not in kept:
+            continue
+        t, gain = kept[c.player_id]
+        o = by_week[t.week]
+        c.odds, c.odds_slot, c.odds_percent = t.odds, t.slot, o.percent
+        c.points_change, c.check_gain, c.shown = o.mine - base.mine, gain, True
+        if t.odds == LOCK and c.score < advice.floor:
+            c.label = under_floor_label(advice.floor)
+        elif t.odds == LOCK and c.score < advice.target:
+            c.label = target_label(advice.target)
+        shown.append(c)
+
+    # 4. All of them together.
+    combined = None
+    if len(shown) >= 2:
+        week = _app_week(lineup.slots, _combined_moves([s.move for s in advice.locks], shown),
+                         advice, positions)
+        if week is not None:
+            [o] = winprob.simulate([week], theirs, games, lock_floor, sims, seed)
+            combined = CombinedOdds(o.percent, o.mine - base.mine)
+    return calls, combined, check_seed
 
 
 # ---------- Player profiles ----------

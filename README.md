@@ -59,7 +59,7 @@ service.py, the engine
 
 ## Vision and roadmap
 
-- **Win probability:** `advise` and the chat already show my odds of winning this week's matchup, from 10,000 simulated weeks of both teams (Monte Carlo, fixed seed, the same draws for every lock compared), and how each recommended lock changes them. Next: play to win the matchup, not just to score points. Lock safer when ahead, chase upside when behind.
+- **Win probability:** `advise` and the chat already show my odds of winning this week's matchup, from 10,000 simulated weeks of both teams (Monte Carlo, fixed seed, the same draws for every lock compared), and how each recommended lock changes them. `advise` also shows where an **odds call** (the lock or pass that gives the best chance to win) disagrees with the points call, with the expected points it gives up, since total points break standings ties. Picking the best of many versions also picks up luck, so each disagreement is re-checked on a second, independent 10,000 weeks and shown only if it still gains at least 1%. Next: grade the odds calls in `review` once the week is final.
 - **Injury news:** have Gemini read the official NBA injury report and news to sharpen each player's chance to play, with a source link for every claim.
 - **Web app:** a FastAPI site with a Lineup tab and a Chat tab, plus a demo mode with a frozen sample week so anyone can click through without a Sleeper account.
 

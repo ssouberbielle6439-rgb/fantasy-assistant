@@ -198,7 +198,55 @@ def _win_probability(team: service.Team, lineup: service.Lineup, advice: service
     print(f"\nWin probability: {odds.percent}% vs {name} ({service.POLICY_TEXT[odds.policy]}; "
           f"{odds.sims:,} simulated weeks)")
     print(f"  Expected totals: you {odds.my_expected:.1f}, {name} {odds.their_expected:.1f}.")
+    _print_odds_calls(odds, team.short)
     return odds
+
+
+def _points_text(change: float) -> str:
+    """'gives up 1.8 expected points' / 'gains 1.1 expected points'."""
+    if round(change, 1) == 0:
+        return "same expected points"
+    return f"{'gains' if change > 0 else 'gives up'} {abs(change):.1f} expected points"
+
+
+def odds_call_line(c: service.OddsCall, short, playoff: bool) -> str:
+    """'Points say PASS, odds say LOCK (+6%, gives up 1.8 expected points):
+    J. Smith Jr. 22.4 in PF, 64% -> 70%  [under today's 23 floor]'.
+
+    The slot goes with each LOCK only when both calls lock (to tell them
+    apart); otherwise after the score, where the odds would lock him."""
+    both_lock = c.points == service.LOCK and c.odds == service.LOCK
+    points = f"{c.points} in {c.points_slot}" if both_lock else c.points
+    odds = f"{c.odds} in {c.odds_slot}" if both_lock else c.odds
+    why = f"{c.change:+d}%" if playoff else f"{c.change:+d}%, {_points_text(c.points_change)}"
+    where = f" in {c.odds_slot}" if c.odds == service.LOCK else ""
+    label = f"  [{c.label}]" if c.label else ""
+    return (f"Points say {points}, odds say {odds} ({why}): {short(c.player_id)} {c.score:.1f}"
+            f"{where}, {c.points_percent}% -> {c.odds_percent}%{label}")
+
+
+def _print_odds_calls(odds: service.WinOdds, short) -> None:
+    """Where the odds would call today's locks differently (step B). Only the
+    disagreements; the points advice below stays the main call."""
+    if odds.playoff:
+        print("  Playoff week: only the win counts.")
+    if not odds.calls:          # no scores in hand: nothing to call
+        return
+    shown = odds.disagreements
+    if not shown:
+        print("  Odds agree with every call.")
+        return
+    print("  Where the odds disagree (today's locks; the points advice below is still the "
+          "main call):")
+    for c in shown:
+        print(f"    {odds_call_line(c, short, odds.playoff)}")
+    if odds.combined is not None:
+        both = odds.combined
+        extra = "" if odds.playoff else f", {_points_text(both.points_change)}"
+        print(f"    All {len(shown)} together: {shown[0].points_percent}% -> {both.percent}%"
+              f"{extra}.")
+    print(f"  (Each was checked on a second, independent {odds.sims:,} simulated weeks and "
+          f"still gained at least {service.ODDS_CALL_MIN_GAIN}%.)")
 
 
 def cmd_advise() -> int:
