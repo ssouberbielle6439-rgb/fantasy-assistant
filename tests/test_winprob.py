@@ -142,6 +142,93 @@ def test_two_teams_with_the_same_players_win_about_half_the_time():
     assert abs(odds.win - 0.5) < 0.02
 
 
+# ---------- The speedup: same numbers, each player worked out once a week ----------
+
+# A busier made-up week: several versions of my lineup sharing players (b in
+# SG in one version and G in another), locked slots, a slot nobody fills, a
+# player with no games left, and both opponent policies.
+SPEED_GAMES = {"a": GAMES["a"], "b": GAMES["b"], "x": GAMES["x"],
+               "c": games("c", (31, 10, 0.65), (31, 10, 0.97), (31, 10, 0.97)),
+               "d": games("d", (17, 6, 0.97), (17, 6, 0.45), days=(SAT, SUN)),
+               "y": games("y", (28, 9, 0.9), (28, 9, 0.9), (28, 9, 0.15))}
+SPEED_MINE = [
+    team(SlotPlan("PG", "a", 0.0), SlotPlan("SG", "b", 0.0), SlotPlan("G", "d", 0.0),
+         SlotPlan("C", "c", 0.0), SlotPlan("F", None, 27.9, True), SlotPlan("UTIL1", "gone", 21.4)),
+    team(SlotPlan("PG", "a", 31.0, True), SlotPlan("SG", "d", 0.0), SlotPlan("G", "b", 0.0),
+         SlotPlan("C", "c", 0.0), SlotPlan("F", None, 27.9, True), SlotPlan("UTIL1", None, 0.0)),
+    team(SlotPlan("PG", "a", 0.0), SlotPlan("SG", "b", 0.0), SlotPlan("G", "d", 0.0),
+         SlotPlan("C", "c", 26.2, True), SlotPlan("F", None, 27.9, True),
+         SlotPlan("UTIL1", "gone", 21.4)),
+]
+SPEED_THEIRS = {"smart": team(SlotPlan("PG", "x", 0.0), SlotPlan("C", "y", 0.0),
+                              SlotPlan("F", None, 90.0, True)),
+                "passive": team(SlotPlan("PG", "x", 12.0, policy=PASSIVE),
+                                SlotPlan("C", "y", 0.0, policy=PASSIVE),
+                                SlotPlan("F", "a", 118.0, True, PASSIVE))}
+
+# (win, my average total, their average total) per version of my week, as the
+# code before the speedup (commit 6459173) printed them for
+# winprob.simulate(SPEED_MINE, SPEED_THEIRS[...], SPEED_GAMES, lock_floor,
+# sims=2000, seed=SEED).
+SMART_BEFORE = [(0.494, 144.383024897, 143.91599135965205),
+                (0.232, 127.66341451733786, 143.91599135965205),
+                (0.321, 134.84351035107224, 143.91599135965205)]
+PASSIVE_BEFORE = [(0.5205, 144.383024897, 144.08319341537083),
+                  (0.222, 127.66341451733786, 144.08319341537083),
+                  (0.3375, 134.84351035107224, 144.08319341537083)]
+
+
+def simulate_slot_by_slot(scenarios, theirs, all_games, floor, sims, seed):
+    """winprob.simulate as it was before the speedup: every slot of every
+    version scored on its own with slot_score, totals summed from {slot: score}."""
+    order = winprob.game_order(all_games)
+    bars = {pid: winprob.lock_bars(gs, floor) for pid, gs in order}
+    n = len(scenarios)
+    wins, mine_sum, theirs_sum = [0.0] * n, [0.0] * n, 0.0
+    for k in range(sims):
+        drawn = winprob.draw_week(order, seed, k)
+        week = [{s.label: winprob.slot_score(s, drawn, bars) for s in t.slots}
+                for t in scenarios + [theirs]]
+        their_total = sum(week[-1].values())
+        theirs_sum += their_total
+        for i in range(n):
+            my_total = sum(week[i].values())
+            mine_sum[i] += my_total
+            wins[i] += 1.0 if my_total > their_total else 0.5 if my_total == their_total else 0.0
+    return [winprob.Odds(wins[i] / sims, mine_sum[i] / sims, theirs_sum / sims) for i in range(n)]
+
+
+def test_speedup_gives_exactly_the_same_numbers_as_scoring_slot_by_slot():
+    for policy, theirs in SPEED_THEIRS.items():
+        for floor in (lock_floor, None):
+            fast = winprob.simulate(SPEED_MINE, theirs, SPEED_GAMES, floor, sims=2000, seed=SEED)
+            slow = simulate_slot_by_slot(SPEED_MINE, theirs, SPEED_GAMES, floor, 2000, SEED)
+            assert fast == slow, (policy, floor)   # equal floats, not just close
+
+
+def test_speedup_gives_the_numbers_the_code_gave_before_it():
+    # Same seed, same numbers as SMART_BEFORE and PASSIVE_BEFORE, to the last bit.
+    smart = winprob.simulate(SPEED_MINE, SPEED_THEIRS["smart"], SPEED_GAMES, lock_floor,
+                             sims=2000, seed=SEED)
+    passive = winprob.simulate(SPEED_MINE, SPEED_THEIRS["passive"], SPEED_GAMES, lock_floor,
+                               sims=2000, seed=SEED)
+    assert [(o.win, o.mine, o.theirs) for o in smart] == SMART_BEFORE
+    assert [(o.win, o.mine, o.theirs) for o in passive] == PASSIVE_BEFORE
+
+
+def test_each_player_is_worked_out_once_a_week_however_many_slots_wait_on_him(monkeypatch):
+    calls = []
+    real = winprob.player_end
+    monkeypatch.setattr(winprob, "player_end",
+                        lambda games, bars, policy: calls.append(policy) or real(games, bars, policy))
+    list(winprob.simulated_slot_scores(SPEED_MINE + [SPEED_THEIRS["passive"]], SPEED_GAMES,
+                                       lock_floor, sims=10, seed=SEED))
+    # 12 slots across the 4 teams wait on someone, but only 6 (player, policy)
+    # pairs: a, b, c, d (app; each in 2 or 3 versions) and x, y (passive).
+    # The passive team's locked a isn't simulated. So 6 a week, not 12.
+    assert len(calls) == 6 * 10
+
+
 def test_settled_once_no_slot_has_a_game_left():
     assert not MINE.settled(GAMES)
     done = team(SlotPlan("PG", "a", 30.0, True), SlotPlan("C", "nobody", 12.0))
